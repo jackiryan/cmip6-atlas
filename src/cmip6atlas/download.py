@@ -45,7 +45,7 @@ GDDP_CMIP6_SCHEMA = {
         "tasmax",
         "tasmin",
     ],
-    "scenarios": ["ssp126", "ssp245", "ssp370", "ssp585"],
+    "scenarios": ["historical", "ssp126", "ssp245", "ssp370", "ssp585"],
     "min_year": 1950,
     "max_year": 2100,
     "historical_end_year": 2014,
@@ -88,17 +88,6 @@ def get_available_models(s3_client: S3Client, bucket: str, prefix: str) -> list[
         )
 
     return models
-
-
-def validate_scenario_for_year(
-    schema: dict[str, Any], year: int, scenario: str
-) -> bool:
-    """Validate whether the given year is historical or part of a projection."""
-    if schema["min_year"] <= year <= schema["historical_end_year"]:
-        return scenario == "historical"
-    elif schema["historical_end_year"] < year <= schema["max_year"]:
-        return scenario in schema["scenarios"]
-    return False
 
 
 def get_available_files(
@@ -239,47 +228,57 @@ def format_size(size_bytes: int) -> str:
     return f"{size_float:.2f} B"
 
 
-def validate_inputs(
-    schema: dict[str, Any], inputs: GranuleSubset, available_models: list[str]
-) -> None:
+def validate_inputs(schema: dict[str, Any], inputs: GranuleSubset) -> None:
     errmsg: list[str] = []
 
     # Validate years
     if not (schema["min_year"] <= inputs.start_year <= schema["max_year"]):
         errmsg.append(
-            f"Start year: {inputs.start_year} must be between {schema['min_year']} and {schema['max_year']}"
+            f"Start year: {inputs.start_year} must be between {schema['min_year']} "
+            f"and {schema['max_year']}"
         )
 
     if not (schema["min_year"] <= inputs.end_year <= schema["max_year"]):
         errmsg.append(
-            f"End year: {inputs.end_year} must be between {schema['min_year']} and {schema['max_year']}"
+            f"End year: {inputs.end_year} must be between {schema['min_year']} and "
+            f"{schema['max_year']}"
         )
 
     if inputs.start_year > inputs.end_year:
         errmsg.append(
-            "Start year cannot be after end year, {inputs.start_year} > {inputs.end_year}"
+            f"Start year cannot be after end year, {inputs.start_year} > "
+            f"{inputs.end_year}"
         )
 
     # Validate variable (handled by argparse if using CLI)
     if inputs.variable not in schema["variables"]:
         errmsg.append(
-            f"{inputs.variable} is not available, choices are: {', '.join(schema['variables'])}"
+            f"{inputs.variable} is not available, choices are: "
+            f"{', '.join(schema['variables'])}"
         )
 
     # Validate scenario (handled by argparse if using CLI)
-    if inputs.scenario not in schema["scenarios"] and inputs.scenario != "historical":
+    if inputs.scenario not in schema["scenarios"]:
         errmsg.append(
-            f"{inputs.scenario} is not available, choices are: {', '.join(schema['scenarios'])} or historical"
+            f"{inputs.scenario} is not available, choices are: "
+            f"{', '.join(schema['scenarios'])}"
         )
 
-    # Validate climate model choices
-    invalid_models = [m not in available_models for m in inputs.models]
-    if any(invalid_models):
-        invalid_model_str = ", ".join(
-            [inputs.models[i] for i in range(len(invalid_models)) if invalid_models[i]]
-        )
+    # Validate query is historical data year if using historical scenario. The inverse
+    # case (historical year with non-historical scenario) will trigger
+    # get_available_files to use the historical data path automatically.
+    years_in_range = set(range(inputs.start_year, inputs.end_year + 1))
+    historical_years = set(range(
+        schema["min_year"],
+        schema["historical_end_year"] + 1
+    ))
+    if inputs.scenario == "historical" and not years_in_range.issubset(
+        historical_years
+    ):
         errmsg.append(
-            f"{invalid_model_str} are not valid climate models in the target dataset"
+            f"specified historical data, but query range {inputs.start_year}-"
+            f"{inputs.end_year} extends outside historical record ending in "
+            f"{schema['historical_end_year']}"
         )
 
     if errmsg != []:
@@ -288,17 +287,62 @@ def validate_inputs(
 
 def download_granules(
     variable: str,
-    start_year: int,
-    end_year: int | None,
     scenario: str,
+    start_year: int,
+    end_year: int | None = None,
     output_dir: str = "./nex-gddp-data",
     models: list[str] | None = None,
+    exclude_models: list[str] | None = None,
     max_workers: int = 5,
     skip_prompt: bool = True,
     schema: dict[str, Any] | None = None,
 ) -> None:
-    # Leave option to download CMIP5, CMIP7 or other similarly organized datasets from NEX later
-    # For now GDDP_CMIP6_SCHEMA is the only supported dataset
+    """
+    Download a set of granules (netCDF files) from the NEX-GDDP-CMIP6 bucket, with
+    default behavior to pull all available models for a given variable/scenario
+    combination.
+
+    Usage:
+        ```
+        from cmip6atlas.download import download_granules
+        # Download all available model outputs for the surface temperature (tas)
+        # variable under the SSP5-8.5 scenario, with an interactive prompt.
+        download_granules(
+            "tas",
+            "ssp585",
+            2025,
+            skip_prompt=False,
+        )
+        ```
+    Args:
+        variable (str): A string describing the CMIP6 variable to download.
+        start_year (int): Integer starting year of the data query.
+        end_year (int | None): Optional end year, default is the start year.
+        scenario (str): Emissions scenario (SSP) for the data query. The "historical"
+            scenario is only available for queries between 1950-2014.
+        output_dir (str): String path to store the downloaded files. Will be created
+            if it does not yet exist.
+        models (list[str] | None): Optionally provide a list of climate models to use
+            in the query. Unavailable models will be ignored, invalid model names will
+            throw a ValueError.
+        exclude_models (list[str] | None): Optionally provide a list of models to
+            exclude from the query. Should not be used in combination with the
+            models keyword.
+        max_workers (int): Number of parallel threads to use for downloading files.
+        skip_prompt (bool): If True, skip the input prompt asking for confirmation of
+            the amount of data to download. Default is True.
+        schema (dict[str, Any] | None): Optionally specify a dataset schema for
+            querying a different s3 bucket. See GDDP_CMIP6_SCHEMA for expected format.
+
+    Returns:
+        None
+
+    Raises:
+        ValueError: If any of the query input arguments are invalid.
+        DownloadError: If an S3 query fails.
+    """
+    # Leave option to download CMIP5, CMIP7 or other similarly organized datasets from
+    # NEX later. For now GDDP_CMIP6_SCHEMA is the only supported dataset
     if not schema:
         schema = GDDP_CMIP6_SCHEMA
 
@@ -314,11 +358,25 @@ def download_granules(
     if not end_year:
         end_year = start_year
 
+    # For now, this relies on input to be exact string match
+    if models and not exclude_models:
+        use_models = list(set(models) & set(available_models))
+    elif exclude_models and not models:
+        use_models = list(set(available_models) - set(exclude_models))
+    elif not models and not exclude_models:
+        use_models = available_models
+    else:
+        raise ValueError("cannot exclude and include models in same query.")
+
     inputs = GranuleSubset(
-        start_year, end_year, variable, scenario, models or available_models
+        start_year,
+        end_year,
+        variable.lower(),
+        scenario.lower(),
+        use_models
     )
     # Will throw ValueError on validation failure
-    validate_inputs(schema, inputs, available_models)
+    validate_inputs(schema, inputs)
 
     files_to_download = []
     total_size = 0
@@ -349,7 +407,8 @@ def download_granules(
 
     if not skip_prompt and files_to_download:
         print(
-            f"After this operation, {len(files_to_download)} granules totaling {format_size(total_size)} will be added to {output_dir}"
+            f"After this operation, {len(files_to_download)} granules totaling "
+            f"{format_size(total_size)} will be added to {output_dir}"
         )
         confirmation = input("\nProceed with download? [y/N] ").lower()
         if confirmation != "y":
@@ -370,6 +429,10 @@ def download_granules(
 
 
 def cli() -> None:
+    """
+    Command Line Interface for downloading files independently of
+    other processing steps.
+    """
     parser = argparse.ArgumentParser(
         description="Download climate model data from NEX-GDDP-CMIP6 S3 bucket"
     )
@@ -378,7 +441,6 @@ def cli() -> None:
 
     variables = cast(list[str], schema["variables"])
     scenarios = cast(list[str], schema["scenarios"])
-    scenarios.append("historical")
     parser.add_argument(
         "--variable",
         type=str,
@@ -397,7 +459,10 @@ def cli() -> None:
     parser.add_argument(
         "--end-year",
         type=int,
-        help=f"End year (between {schema['min_year']} and {schema['max_year']}, defaults to start-year)",
+        help=(
+            f"End year (between {schema['min_year']} and {schema['max_year']}, "
+            "defaults to start-year)"
+        ),
     )
 
     parser.add_argument(
@@ -413,6 +478,13 @@ def cli() -> None:
         type=str,
         nargs="+",
         help="Specific models to download (default: all available models)",
+    )
+
+    parser.add_argument(
+        "--exclude-models",
+        type=str,
+        nargs="+",
+        help="Exclude specific models from the query",
     )
 
     parser.add_argument(
@@ -438,15 +510,12 @@ def cli() -> None:
     # schema option is not provided in cli due to only one option (for now)
     download_granules(
         args.variable,
+        args.scenario,
         args.start_year,
         args.end_year,
-        args.scenario,
         args.output_dir,
         args.models,
+        args.exclude_models,
         args.max_workers,
         args.yes,
     )
-
-
-if __name__ == "__main__":
-    cli()
