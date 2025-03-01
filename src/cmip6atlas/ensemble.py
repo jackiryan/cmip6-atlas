@@ -21,81 +21,146 @@ SOFTWARE.
 """
 
 """
-CMIP6 Ensemble PDF Generator
+CMIP6 Ensemble Mean Generation
 
 Processes NEX-GDDP-CMIP6 NetCDF files to create a gridded raster where each cell
-represents a Probability Distribution Function (PDF) of annual mean temperature
-values across all models.
+represents a mean of the time-averaged model means. The output files can then be
+combined in 5-year windowed averages, or used to create 30 year normals.
 
-Input: A directory containing NetCDF files for tas variable from multiple models
-       for SSP5-8.5 scenario in year 2025
-Output: NetCDF file with PDF parameters for each grid cell
+Input: A directory containing NetCDF files for a cmip6 variable from multiple models
+       for a given SSP emissions scenario and year
+Output: NetCDF file with mean of model outputs and cross-model standard deviation
+        for each grid cell
 """
 
 import argparse
+import calendar
+from cftime import Datetime360Day, DatetimeNoLeap
+from datetime import datetime
 import glob
 import numpy as np
 import os
-from scipy import stats
 import warnings
 import xarray as xr
 
 warnings.filterwarnings("ignore")
 
+VAR_NAME_MAP = {
+    "hurs": "relative humidity",
+    "huss": "specific humidity",
+    "pr": "precipitation flux",
+    "sfcWind": "daily-mean surface wind speed",
+    "tas": "surface air temperature",
+    "tasmax": "daily max surface air temperature",
+    "tasmin": "daily min surface air temperature",
+}
 
-def create_cmip6_ensemble_nc(
-    input_dir: str, output_file: str, variable: str, scenario: str, year: int
+
+def get_month_boundaries(year: int, month: int) -> tuple[datetime, datetime]:
+    """
+    Returns a tuple of datetime objects representing the first and last day
+    of the specified month in the specified year.
+    """
+    first_day = datetime(year, month, 1)
+    _, num_days = calendar.monthrange(year, month)
+    last_day = datetime(year, month, num_days)
+
+    return (first_day, last_day)
+
+
+def create_cmip6_ensemble_mean(
+    input_granules: list[str],
+    output_file: str,
+    variable: str,
+    scenario: str,
+    year: int,
+    subset: tuple[datetime, datetime] | None = None,
 ) -> xr.Dataset:
     """
-    Create a gridded raster where each cell contains PDF parameters of annual mean
-    temperature values across all models.
+    Create a gridded raster where each cell contains the mean and standard deviation of
+    each model mean for the given variable.
 
-    Arguments:
-        input_dir (str): Directory containing the NetCDF files
+    Args:
+        input_granules (list[str]): List of input netCDF files (granules) representing
+            model outputs for a single year
         output_file (str): Path to save the output NetCDF file
-        variable (str): Variable name
-        scenario (str): Scenario name (default: 'ssp585')
+        variable (str): CMIP6 variable name
+        scenario (str): SSP scenario name
         year (int): Year to process
+        subset (tuple[datetime, datetime] | None): temporal subset of the input data as
+            a tuple representing a start and end date
 
     Returns:
-        xr.Dataset: a netCDF dataset with the combined probability distribution of
-            the model means.
+        xr.Dataset: a netCDF dataset with the combined mean/std. dev. of the model means
     """
-    # Pattern to match NetCDF files for the specified variable, scenario, and year
-    pattern = f"{variable}_day_*_{scenario}_*_{year}*.nc"
-    file_pattern = os.path.join(input_dir, pattern)
-
-    # Find all matching files
-    nc_files = glob.glob(file_pattern)
-
-    if not nc_files:
-        raise FileNotFoundError(f"No files found matching pattern: {file_pattern}")
-
-    print(f"Found {len(nc_files)} model files to process")
-
-    # Storage for annual means from each model
+    # Storage for annual/subsetted means from each model
     model_means = []
     model_names = []
 
-    for nc_file in nc_files:
+    # Determine period name for metadata
+    if subset is not None:
+        start_month, end_month = subset[0].month, subset[1].month
+        if start_month == end_month:
+            period_name = subset[0].strftime("%b").lower()
+            period_description = subset[0].strftime("%B")
+        else:
+            period_name = f"{start_month:02d}_{end_month:02d}"
+            period_description = (
+                f"subset period {subset[0].strftime('%m-%d')} to "
+                f"{subset[1].strftime('%m-%d')}"
+            )
+        # Create a backup subsets for models with non-standard date formats
+        end_day = subset[1].day
+        # DatetimeNoLeap throws ValueError if given a leap day
+        if subset[1].month == 2 and end_day == 29:
+            end_day -= 1
+        subset_noleap = (
+            DatetimeNoLeap(subset[0].year, subset[0].month, subset[0].day),
+            DatetimeNoLeap(subset[1].year, subset[1].month, end_day),
+        )
+        # Technically this breaks subsets that are not to the end of a month, but
+        # there is no practical reason to specify such a subset for this analysis.
+        subset_360 = (
+            Datetime360Day(subset[0].year, subset[0].month, subset[0].day),
+            Datetime360Day(subset[1].year, subset[1].month, 30),
+        )
+    else:
+        period_name = "ann"
+        period_description = "annual average"
+
+    for nc_file in input_granules:
         # Extract model name from filename
         filename = os.path.basename(nc_file)
         model_name = filename.split("_")[2]
         print(f"Processing model: {model_name}")
 
-        # Open the NetCDF file
         ds = xr.open_dataset(nc_file)
 
-        # Convert from K to C if needed (NEX-GDDP-CMIP6 tas is in K)
+        # Convert from K to C (NEX-GDDP-CMIP6 tas is in K)
         if ds[variable].attrs.get("units") == "K":
+            canonical_unit = "C"
             ds[variable] = ds[variable] - 273.15
-            ds[variable].attrs["units"] = "C"
+            ds[variable].attrs["units"] = canonical_unit
 
-        # Calculate annual mean
-        annual_mean = ds[variable].mean(dim="time")
+        # Apply temporal subset if provided
+        if subset is not None:
+            # Some models do not account for leap days and use the
+            # cftime.DatetimeNoLeap date format
+            if type(ds.time.data[0]) == DatetimeNoLeap:
+                ds_subset = ds.sel(time=slice(subset_noleap[0], subset_noleap[1]))
+            elif type(ds.time.data[0]) == Datetime360Day:
+                ds_subset = ds.sel(time=slice(subset_360[0], subset_360[1]))
+            else:
+                ds_subset = ds.sel(time=slice(subset[0], subset[1]))
 
-        # Store model annual mean
-        model_means.append(annual_mean)
+            # Calculate model mean for the subset period
+            model_mean = ds_subset[variable].mean(dim="time")
+        else:
+            # Calculate annual model mean
+            model_mean = ds[variable].mean(dim="time")
+
+        # Store model annual/subset mean
+        model_means.append(model_mean)
         model_names.append(model_name)
 
         ds.close()
@@ -105,10 +170,14 @@ def create_cmip6_ensemble_nc(
     lat = model_means[0].lat
     lon = model_means[0].lon
 
-    # Create a new dataset to store models data
+    # Create a new dataset to store the output distribution; in other words,
+    # the values of all the model means concatenated
     distribution_ds = xr.Dataset(
         data_vars={
-            f"{variable}_annual_mean": (["model", "lat", "lon"], np.stack(model_means)),
+            f"{variable}_{period_name}_mean": (
+                ["model", "lat", "lon"],
+                np.stack(model_means),
+            ),
         },
         coords={
             "model": (["model"], model_names),
@@ -116,9 +185,6 @@ def create_cmip6_ensemble_nc(
             "lon": (["lon"], lon.values),
         },
     )
-    # For debugging, can save output distribution to file
-    # Remember to comment out the other file saving operation
-    # distribution_ds.to_netcdf(output_file)
 
     # Create output dataset for PDF parameters
     ensemble_ds = xr.Dataset(
@@ -133,40 +199,55 @@ def create_cmip6_ensemble_nc(
     )
 
     # Add units, currently only supporting temperature
-    ensemble_ds["mean"].attrs["units"] = "C"
-    ensemble_ds["std"].attrs["units"] = "C"
+    ensemble_ds["mean"].attrs["units"] = canonical_unit
+    ensemble_ds["std"].attrs["units"] = canonical_unit
     ensemble_ds["mean"].attrs[
         "long_name"
-    ] = f"Mean of {variable} annual averages across models"
+    ] = f"CMIP6 mean of {period_description} {VAR_NAME_MAP.get(variable)}"
     ensemble_ds["std"].attrs[
         "long_name"
-    ] = f"Standard deviation of {variable} annual averages across models"
+    ] = f"Cross-model standard deviation of {period_description} {VAR_NAME_MAP.get(variable)}"
 
-    # For each grid cell, compute PDF parameters
+    # For each grid cell, compute mean parameters
+    print("Generating ensemble dataset...")
     for i in range(len(lat)):
         for j in range(len(lon)):
             # Extract values for this grid cell across all models
-            cell_values = distribution_ds[f"{variable}_annual_mean"][:, i, j].values
+            cell_values = distribution_ds[f"{variable}_{period_name}_mean"][
+                :, i, j
+            ].values
 
             # Filter out NaN values (e.g., ocean points in some models)
             valid_values = cell_values[~np.isnan(cell_values)]
 
-            if len(valid_values) > 1:  # Need at least 2 values for stats
-                # Calculate PDF parameters
+            if len(valid_values) > 1:
+                # Calculate mean parameters
                 mean = np.mean(valid_values)
                 std = np.std(valid_values)
-
-                # Store in output dataset
-                ensemble_ds["mean"][i, j] = mean
-                ensemble_ds["std"][i, j] = std
+            else:
+                mean = None
+                std = None
+            # Store in output dataset
+            ensemble_ds["mean"][i, j] = mean
+            ensemble_ds["std"][i, j] = std
 
     # Add metadata
-    ensemble_ds.attrs["description"] = (
-        f"Ensemble parameters for {variable} under {scenario} in {year}"
-    )
+    if subset is not None:
+        ensemble_ds.attrs["description"] = (
+            f"Ensemble parameters for {variable} under {scenario} in {year}, "
+            f"{period_description}"
+        )
+        ensemble_ds.attrs["subset_start"] = subset[0].strftime("%m-%d")
+        ensemble_ds.attrs["subset_end"] = subset[1].strftime("%m-%d")
+    else:
+        ensemble_ds.attrs["description"] = (
+            f"Ensemble parameters for {variable} under {scenario} in {year}"
+        )
+
     ensemble_ds.attrs["variable"] = variable
     ensemble_ds.attrs["scenario"] = scenario
     ensemble_ds.attrs["year"] = year
+    ensemble_ds.attrs["period"] = period_name
     ensemble_ds.attrs["models_used"] = ", ".join(model_names)
 
     # Save output
@@ -176,10 +257,77 @@ def create_cmip6_ensemble_nc(
     return ensemble_ds
 
 
-def parse_arguments() -> argparse.Namespace:
-    """Define and parse command line arguments"""
+def ensemble_process(
+    input_dir: str,
+    output_dir: str,
+    variable: str,
+    scenario: str,
+    year: int,
+    month: int | None = None,
+    output_file: str | None = None,
+) -> None:
+    """
+    Intermediate function for automating file names before creating
+    cmip6 ensemble mean.
+
+    Args:
+        input_dir (str): Directory containing pre-downloaded model outputs
+        output_dir (str): Directory to store ensemble mean files
+        variable (str): CMIP6 variable name
+        scenario (str): SSP scenario name
+        year (int): Year to process
+        month (int): Month to subset model data
+        output_file (str | None): Optionally override default file name convention
+
+    Returns:
+        None
+    """
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Handle subsetting to one month, do this early as it affects the output filename
+    if month is not None:
+        subset = get_month_boundaries(year, month)
+        print(
+            f"Subsetting data from {subset[0].strftime('%Y-%m-%d')} to {subset[1].strftime('%Y-%m-%d')}"
+        )
+        month_str = f"_{subset[0].strftime('%b').lower()}"
+    else:
+        subset = None
+        month_str = ""
+
+    # Determine output file path
+    if output_file:
+        ensemble_file = output_file
+        if not os.path.isabs(ensemble_file):
+            output_file = os.path.join(output_dir, output_file)
+    else:
+        # Default naming pattern
+        ensemble_file = os.path.join(
+            output_dir, f"{variable}_ensemble_{scenario}_{year}{month_str}.nc"
+        )
+
+    # Pattern to match NetCDF files for the specified variable, scenario, and year
+    pattern = f"{variable}_day_*_{scenario}_*_{year}*.nc"
+    file_pattern = os.path.join(input_dir, pattern)
+
+    # Find all matching granules in the input dir
+    granules = glob.glob(file_pattern)
+
+    if not granules:
+        raise FileNotFoundError(f"No files found matching pattern: {file_pattern}")
+
+    print(f"Found {len(granules)} model outputs to process")
+
+    create_cmip6_ensemble_mean(
+        granules, ensemble_file, variable, scenario, year, subset
+    )
+
+
+def cli() -> None:
+    """Command Line Interface for generating an ensemble mean file for a single year."""
     parser = argparse.ArgumentParser(
-        description="Generate ensemble PDFs from CMIP6 NetCDF files",
+        description="Generate ensemble means from CMIP6 NetCDF model outputs",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -206,48 +354,26 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "-s",
         "--scenario",
+        default="ssp585",
         help="Climate scenario (e.g., ssp585, ssp245, historical)",
     )
 
     parser.add_argument("-y", "--year", type=int, help="Year to process")
+
+    parser.add_argument("-m", "--month", type=int, help="Month to subset model data")
 
     parser.add_argument(
         "--output-file",
         help="Specify custom output filename (overrides default naming pattern)",
     )
 
-    return parser.parse_args()
-
-
-def main() -> None:
-    """Main function to process command line arguments and run the processing"""
-    # Parse command line arguments
-    args = parse_arguments()
-
-    # Create output directory if it doesn't exist
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    # Determine output file path
-    if args.output_file:
-        output_file = args.output_file
-        if not os.path.isabs(output_file):
-            output_file = os.path.join(args.output_dir, output_file)
-    else:
-        # Default naming pattern
-        output_file = os.path.join(
-            args.output_dir, f"{args.variable}_ensemble_{args.scenario}_{args.year}.nc"
-        )
-
-    # Process files
-    try:
-        create_cmip6_ensemble_nc(
-            input_dir=args.input_dir,
-            output_file=output_file,
-            variable=args.variable,
-            scenario=args.scenario,
-            year=args.year,
-        )
-    except FileNotFoundError as e:
-        print(f"Error: {e}")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+    args = parser.parse_args()
+    ensemble_process(
+        args.input_dir,
+        args.output_dir,
+        args.variable,
+        args.scenario,
+        args.year,
+        args.month,
+        args.output_file,
+    )

@@ -268,10 +268,7 @@ def validate_inputs(schema: dict[str, Any], inputs: GranuleSubset) -> None:
     # case (historical year with non-historical scenario) will trigger
     # get_available_files to use the historical data path automatically.
     years_in_range = set(range(inputs.start_year, inputs.end_year + 1))
-    historical_years = set(range(
-        schema["min_year"],
-        schema["historical_end_year"] + 1
-    ))
+    historical_years = set(range(schema["min_year"], schema["historical_end_year"] + 1))
     if inputs.scenario == "historical" and not years_in_range.issubset(
         historical_years
     ):
@@ -369,11 +366,7 @@ def download_granules(
         raise ValueError("cannot exclude and include models in same query.")
 
     inputs = GranuleSubset(
-        start_year,
-        end_year,
-        variable.lower(),
-        scenario.lower(),
-        use_models
+        start_year, end_year, variable.lower(), scenario.lower(), use_models
     )
     # Will throw ValueError on validation failure
     validate_inputs(schema, inputs)
@@ -442,6 +435,7 @@ def cli() -> None:
     variables = cast(list[str], schema["variables"])
     scenarios = cast(list[str], schema["scenarios"])
     parser.add_argument(
+        "-v",
         "--variable",
         type=str,
         required=True,
@@ -466,6 +460,7 @@ def cli() -> None:
     )
 
     parser.add_argument(
+        "-s",
         "--scenario",
         type=str,
         required=True,
@@ -474,6 +469,7 @@ def cli() -> None:
     )
 
     parser.add_argument(
+        "-m",
         "--models",
         type=str,
         nargs="+",
@@ -488,6 +484,7 @@ def cli() -> None:
     )
 
     parser.add_argument(
+        "-o",
         "--output-dir",
         type=str,
         default="./nex-gddp-data",
@@ -502,7 +499,7 @@ def cli() -> None:
     )
 
     parser.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation prompt"
+        "-y", "--yes", action="store_true", help="Skip confirmation prompt"
     )
 
     args = parser.parse_args()
