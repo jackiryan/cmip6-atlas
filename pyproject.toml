@@ -3,10 +3,18 @@ build-backend = "flit_core.buildapi"
 requires = ["flit_core >= 3.4, < 4"]
 
 [project]
-authors = [{name = "Jacqueline Ryan", email = "jacquiepi@protonmail.com"}]
-dependencies = ["boto3 >= 1.30.0", "botocore >= 1.30.0"]
+authors = [{ name = "Jacqueline Ryan", email = "jacquiepi@protonmail.com" }]
+dependencies = [
+    "boto3 >= 1.30.0",
+    "botocore >= 1.30.0",
+    "netCDF4>=1.5.8",
+    "numpy>=1.20.0",
+    "pandas>=1.4.0",
+    "scipy>=1.8.0",
+    "xarray>=2022.3.0",
+]
 description = "Process CMIP6 data into derived statistics at a local level"
-license = {file = "LICENSE"}
+license = { file = "LICENSE" }
 name = "cmip6atlas"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,6 +32,7 @@ dev = [
     "mypy",
     "boto3-stubs >= 1.30.0",
     "mypy-boto3-s3 >= 1.30.0",
+    "scipy-stubs >= 1.8.0",
     "pytest",
     "pytest-cov",
 ]
@@ -53,10 +62,7 @@ exclude_lines = [
     "raise ImportError",
 ]
 ignore_errors = true
-omit = [
-    "test/*",
-    "setup.py",
-]
+omit = ["test/*", "setup.py"]
 
 [tool.black]
 line-length = 88
