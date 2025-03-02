@@ -5,8 +5,11 @@ requires = ["flit_core >= 3.4, < 4"]
 [project]
 authors = [{ name = "Jacqueline Ryan", email = "jacquiepi@protonmail.com" }]
 dependencies = [
+    "bokeh>=3.1.0",
     "boto3 >= 1.30.0",
     "botocore >= 1.30.0",
+    "dask>=2022.2.0",
+    "distributed>=2022.2.0",
     "netCDF4>=1.5.8",
     "numpy>=1.20.0",
     "pandas>=1.4.0",
@@ -38,9 +41,13 @@ dev = [
 [project.scripts]
 download_cmip6_granules = "cmip6atlas.download:cli"
 create_ensemble_mean = "cmip6atlas.ensemble:cli"
+create_windowed_average = "cmip6atlas.window:cli"
 
 [tool.flit.module]
 name = "cmip6atlas"
+
+[tool.flit.sdist]
+include = ["py.typed"]
 
 [tool.pytest.ini_options]
 addopts = "--cov --cov-report=term-missing --cov-report=xml --cov-report=html --import-mode=importlib"

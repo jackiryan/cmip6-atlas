@@ -1,0 +1,66 @@
+import dask
+from dask.distributed import Client
+
+from cmip6atlas.cli import get_parser
+from cmip6atlas.download import download_granules
+from cmip6atlas.ensemble import ensemble_process
+
+
+def process_window(
+    variable: str,
+    scenario: str,
+    start_year: int,
+    end_year: int,
+    input_dir: str,
+    output_dir: str,
+    models: list[str] | None = None,
+    exclude_models: list[str] | None = None,
+    max_workers: int = 5,
+) -> None:
+    client = Client()
+    print(f"Dask dashboard available at: {client.dashboard_link}")
+
+    def year_task(year: int):
+        download_granules(
+            variable,
+            scenario,
+            year,
+            output_dir=input_dir,
+            models=models,
+            exclude_models=exclude_models,
+            max_workers=1,
+        )
+        ensemble_process(input_dir, output_dir, variable, scenario, year)
+
+    tasks = []
+    for year in range(start_year, end_year + 1):
+        task = dask.delayed(year_task)(year)
+        tasks.append(task)
+
+    results = dask.compute(*tasks)
+
+    client.close()
+
+
+def cli() -> None:
+    """
+    Command Line Interface for downloading files independently of
+    other processing steps.
+    """
+    parser = get_parser(
+        "Generate an ensemble mean (average model output) over a time window, including file downloads.",
+        task="window",
+    )
+
+    args = parser.parse_args()
+    process_window(
+        args.variable,
+        args.scenario,
+        args.start_year,
+        args.end_year,
+        args.input_dir,
+        args.output_dir,
+        args.models,
+        args.exclude_models,
+        args.max_workers,
+    )

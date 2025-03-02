@@ -21,7 +21,6 @@ SOFTWARE.
 """
 
 import os
-import argparse
 import concurrent.futures
 from dataclasses import dataclass
 from typing import Any, cast
@@ -30,27 +29,8 @@ from botocore import UNSIGNED
 from botocore.config import Config
 from mypy_boto3_s3.client import S3Client
 
-
-GDDP_CMIP6_SCHEMA = {
-    "bucket": "nex-gddp-cmip6",
-    "prefix": "NEX-GDDP-CMIP6",
-    "variables": [
-        "hurs",
-        "huss",
-        "pr",
-        "rlds",
-        "rsds",
-        "sfcWind",
-        "tas",
-        "tasmax",
-        "tasmin",
-    ],
-    "scenarios": ["historical", "ssp126", "ssp245", "ssp370", "ssp585"],
-    "min_year": 1950,
-    "max_year": 2100,
-    "historical_end_year": 2014,
-    "realization": "r1i1p1f1",
-}
+from cmip6atlas.cli import get_parser
+from cmip6atlas.schema import GDDP_CMIP6_SCHEMA
 
 
 @dataclass(frozen=True)
@@ -426,80 +406,8 @@ def cli() -> None:
     Command Line Interface for downloading files independently of
     other processing steps.
     """
-    parser = argparse.ArgumentParser(
-        description="Download climate model data from NEX-GDDP-CMIP6 S3 bucket"
-    )
-
-    schema = GDDP_CMIP6_SCHEMA
-
-    variables = cast(list[str], schema["variables"])
-    scenarios = cast(list[str], schema["scenarios"])
-    parser.add_argument(
-        "-v",
-        "--variable",
-        type=str,
-        required=True,
-        choices=variables,
-        help="Climate variable to download",
-    )
-
-    parser.add_argument(
-        "--start-year",
-        type=int,
-        required=True,
-        help=f"Start year (between {schema['min_year']} and {schema['max_year']})",
-    )
-
-    parser.add_argument(
-        "--end-year",
-        type=int,
-        help=(
-            f"End year (between {schema['min_year']} and {schema['max_year']}, "
-            "defaults to start-year)"
-        ),
-    )
-
-    parser.add_argument(
-        "-s",
-        "--scenario",
-        type=str,
-        required=True,
-        choices=scenarios,
-        help="Climate scenario (historical is only valid for 1950-2014)",
-    )
-
-    parser.add_argument(
-        "-m",
-        "--models",
-        type=str,
-        nargs="+",
-        help="Specific models to download (default: all available models)",
-    )
-
-    parser.add_argument(
-        "--exclude-models",
-        type=str,
-        nargs="+",
-        help="Exclude specific models from the query",
-    )
-
-    parser.add_argument(
-        "-o",
-        "--output-dir",
-        type=str,
-        default="./nex-gddp-data",
-        help="Directory to save downloaded files",
-    )
-
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=5,
-        help="Maximum number of parallel downloads",
-    )
-
-    parser.add_argument(
-        "-y", "--yes", action="store_true", help="Skip confirmation prompt"
+    parser = get_parser(
+        "Download climate model data from NEX-GDDP-CMIP6 S3 bucket", task="download"
     )
 
     args = parser.parse_args()

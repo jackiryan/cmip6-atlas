@@ -33,7 +33,6 @@ Output: NetCDF file with mean of model outputs and cross-model standard deviatio
         for each grid cell
 """
 
-import argparse
 import calendar
 from cftime import Datetime360Day, DatetimeNoLeap
 from datetime import datetime
@@ -42,6 +41,8 @@ import numpy as np
 import os
 import warnings
 import xarray as xr
+
+from cmip6atlas.cli import get_parser
 
 warnings.filterwarnings("ignore")
 
@@ -70,7 +71,6 @@ def get_month_boundaries(year: int, month: int) -> tuple[datetime, datetime]:
 
 def create_cmip6_ensemble_mean(
     input_granules: list[str],
-    output_file: str,
     variable: str,
     scenario: str,
     year: int,
@@ -83,7 +83,6 @@ def create_cmip6_ensemble_mean(
     Args:
         input_granules (list[str]): List of input netCDF files (granules) representing
             model outputs for a single year
-        output_file (str): Path to save the output NetCDF file
         variable (str): CMIP6 variable name
         scenario (str): SSP scenario name
         year (int): Year to process
@@ -250,10 +249,6 @@ def create_cmip6_ensemble_mean(
     ensemble_ds.attrs["period"] = period_name
     ensemble_ds.attrs["models_used"] = ", ".join(model_names)
 
-    # Save output
-    ensemble_ds.to_netcdf(output_file)
-    print(f"Saved ensemble parameters to {output_file}")
-
     return ensemble_ds
 
 
@@ -319,52 +314,18 @@ def ensemble_process(
 
     print(f"Found {len(granules)} model outputs to process")
 
-    create_cmip6_ensemble_mean(
-        granules, ensemble_file, variable, scenario, year, subset
-    )
+    ensemble_ds = create_cmip6_ensemble_mean(granules, variable, scenario, year, subset)
+
+    # Save output
+    ensemble_ds.to_netcdf(ensemble_file)
+    print(f"Saved ensemble parameters to {ensemble_file}")
 
 
 def cli() -> None:
     """Command Line Interface for generating an ensemble mean file for a single year."""
-    parser = argparse.ArgumentParser(
-        description="Generate ensemble means from CMIP6 NetCDF model outputs",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-
-    parser.add_argument(
-        "-i",
-        "--input-dir",
-        default="./nex-gddp-cmip6/",
-        help="Directory containing NetCDF files",
-    )
-
-    parser.add_argument(
-        "-o",
-        "--output-dir",
-        default="./ensemble-means",
-        help="Directory for output files",
-    )
-
-    parser.add_argument(
-        "-v",
-        "--variable",
-        help="Climate variable to process (e.g., tas, pr, tasmax)",
-    )
-
-    parser.add_argument(
-        "-s",
-        "--scenario",
-        default="ssp585",
-        help="Climate scenario (e.g., ssp585, ssp245, historical)",
-    )
-
-    parser.add_argument("-y", "--year", type=int, help="Year to process")
-
-    parser.add_argument("-m", "--month", type=int, help="Month to subset model data")
-
-    parser.add_argument(
-        "--output-file",
-        help="Specify custom output filename (overrides default naming pattern)",
+    parser = get_parser(
+        "Generate ensemble means from locally saved CMIP6 NetCDF model outputs",
+        task="ensemble",
     )
 
     args = parser.parse_args()

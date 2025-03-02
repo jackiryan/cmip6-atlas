@@ -43,7 +43,7 @@ class TestGetAvailableModels:
         }
 
         models = get_available_models(mock_client, "test-bucket", "NEX-GDDP-CMIP6")
-        
+
         assert models == ["ACCESS-CM2", "CESM2", "MIROC6"]
         mock_client.list_objects_v2.assert_called_once_with(
             Bucket="test-bucket", Prefix="NEX-GDDP-CMIP6", Delimiter="/"
@@ -56,7 +56,7 @@ class TestGetAvailableModels:
 
         with pytest.raises(DownloadError) as excinfo:
             get_available_models(mock_client, "test-bucket", "NEX-GDDP-CMIP6")
-        
+
         assert "could not retrieve available models" in str(excinfo.value)
 
 
@@ -90,7 +90,7 @@ class TestGetAvailableFiles:
         assert len(files) == 2
         assert files[0][1] == "tas_day_ACCESS-CM2_ssp585_r1i1p1f1_gn_2025.nc"
         assert files[1][1] == "tas_day_ACCESS-CM2_ssp585_r1i1p1f1_gn_2026.nc"
-    
+
     def test_get_available_files_historical(self):
         """Test retrieval of files for a single scenario."""
         mock_client = MagicMock()
@@ -120,7 +120,7 @@ class TestGetAvailableFiles:
     def test_get_available_files_cross_historical(self):
         """Test retrieval of files spanning historical and projected periods."""
         mock_client = MagicMock()
-        
+
         # First call for historical data
         mock_client.list_objects_v2.side_effect = [
             {
@@ -152,7 +152,7 @@ class TestGetAvailableFiles:
 
         schema = GDDP_CMIP6_SCHEMA.copy()
         schema["historical_end_year"] = 2014  # Ensure this is set correctly
-        
+
         files = get_available_files(
             mock_client, schema, "ACCESS-CM2", "ssp585", "tas", 2013, 2016
         )
@@ -198,15 +198,17 @@ class TestDownloadFile:
     def test_download_file_new(self):
         """Test downloading a new file."""
         mock_client = MagicMock()
-        
-        with patch("os.path.exists", return_value=False), \
-             patch("os.makedirs") as mock_makedirs, \
-             patch("os.path.dirname", return_value="/test/dir"):
-            
+
+        with (
+            patch("os.path.exists", return_value=False),
+            patch("os.makedirs") as mock_makedirs,
+            patch("os.path.dirname", return_value="/test/dir"),
+        ):
+
             result = download_file(
                 mock_client, "test-bucket", "test-key", "/test/dir/test-file.nc"
             )
-            
+
             mock_makedirs.assert_called_once_with("/test/dir")
             mock_client.download_file.assert_called_once_with(
                 "test-bucket", "test-key", "/test/dir/test-file.nc"
@@ -217,14 +219,16 @@ class TestDownloadFile:
         """Test skipping an existing file with the same size."""
         mock_client = MagicMock()
         mock_client.head_object.return_value = {"ContentLength": 1024000}
-        
-        with patch("os.path.exists", return_value=True), \
-             patch("os.path.getsize", return_value=1024000):
-            
+
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.path.getsize", return_value=1024000),
+        ):
+
             result = download_file(
                 mock_client, "test-bucket", "test-key", "/test/dir/test-file.nc"
             )
-            
+
             mock_client.head_object.assert_called_once_with(
                 Bucket="test-bucket", Key="test-key"
             )
@@ -235,16 +239,18 @@ class TestDownloadFile:
         """Test re-downloading an existing file with a different size."""
         mock_client = MagicMock()
         mock_client.head_object.return_value = {"ContentLength": 1024000}
-        
-        with patch("os.path.exists", return_value=True), \
-             patch("os.path.getsize", return_value=512000), \
-             patch("os.makedirs") as mock_makedirs, \
-             patch("os.path.dirname", return_value="/test/dir"):
-            
+
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.path.getsize", return_value=512000),
+            patch("os.makedirs") as mock_makedirs,
+            patch("os.path.dirname", return_value="/test/dir"),
+        ):
+
             result = download_file(
                 mock_client, "test-bucket", "test-key", "/test/dir/test-file.nc"
             )
-            
+
             mock_client.head_object.assert_called_once_with(
                 Bucket="test-bucket", Key="test-key"
             )
@@ -263,36 +269,66 @@ class TestDownloadFilesParallel:
             ("key2", "file2.nc", 2048),
             ("key3", "file3.nc", 3072),
         ]
-        
+
         # Mock the concurrent.futures.ThreadPoolExecutor
-        with patch("concurrent.futures.ThreadPoolExecutor") as mock_executor, \
-             patch("os.path.join", side_effect=lambda d, f: f"{d}/{f}"):
-            
+        with (
+            patch("concurrent.futures.ThreadPoolExecutor") as mock_executor,
+            patch("os.path.join", side_effect=lambda d, f: f"{d}/{f}"),
+        ):
+
             # Mock executor's submit method and future results
             mock_executor_instance = mock_executor.return_value.__enter__.return_value
-            mock_future1, mock_future2, mock_future3 = MagicMock(), MagicMock(), MagicMock()
+            mock_future1, mock_future2, mock_future3 = (
+                MagicMock(),
+                MagicMock(),
+                MagicMock(),
+            )
             mock_future1.result.return_value = True
             mock_future2.result.return_value = False
             mock_future3.result.return_value = True
-            mock_executor_instance.submit.side_effect = [mock_future1, mock_future2, mock_future3]
-            
+            mock_executor_instance.submit.side_effect = [
+                mock_future1,
+                mock_future2,
+                mock_future3,
+            ]
+
             # Mock as_completed to return futures in order
-            with patch("concurrent.futures.as_completed", 
-                      return_value=[mock_future1, mock_future2, mock_future3]):
-                
+            with patch(
+                "concurrent.futures.as_completed",
+                return_value=[mock_future1, mock_future2, mock_future3],
+            ):
+
                 result = download_files_parallel(
                     mock_client, "test-bucket", files, "/output", 3
                 )
-            
+
             # Check that submit was called correctly for each file
             assert mock_executor_instance.submit.call_count == 3
             expected_calls = [
-                call(download_file, mock_client, "test-bucket", "key1", "/output/file1.nc"),
-                call(download_file, mock_client, "test-bucket", "key2", "/output/file2.nc"),
-                call(download_file, mock_client, "test-bucket", "key3", "/output/file3.nc"),
+                call(
+                    download_file,
+                    mock_client,
+                    "test-bucket",
+                    "key1",
+                    "/output/file1.nc",
+                ),
+                call(
+                    download_file,
+                    mock_client,
+                    "test-bucket",
+                    "key2",
+                    "/output/file2.nc",
+                ),
+                call(
+                    download_file,
+                    mock_client,
+                    "test-bucket",
+                    "key3",
+                    "/output/file3.nc",
+                ),
             ]
             mock_executor_instance.submit.assert_has_calls(expected_calls)
-            
+
             # 2 files should have been downloaded (first and third returned True)
             assert result == 2
 
@@ -328,9 +364,9 @@ class TestValidateInputs:
             end_year=2030,
             variable="tas",
             scenario="ssp585",
-            models=["ACCESS-CM2", "CESM2"]
+            models=["ACCESS-CM2", "CESM2"],
         )
-        
+
         # Should not raise any exceptions
         validate_inputs(schema, inputs)
 
@@ -342,9 +378,9 @@ class TestValidateInputs:
             end_year=2030,
             variable="tas",
             scenario="ssp585",
-            models=["ACCESS-CM2"]
+            models=["ACCESS-CM2"],
         )
-        
+
         with pytest.raises(ValueError) as excinfo:
             validate_inputs(schema, inputs)
         assert "Start year" in str(excinfo.value)
@@ -357,9 +393,9 @@ class TestValidateInputs:
             end_year=2200,  # After max_year
             variable="tas",
             scenario="ssp585",
-            models=["ACCESS-CM2"]
+            models=["ACCESS-CM2"],
         )
-        
+
         with pytest.raises(ValueError) as excinfo:
             validate_inputs(schema, inputs)
         assert "End year" in str(excinfo.value)
@@ -372,9 +408,9 @@ class TestValidateInputs:
             end_year=2020,  # Before start_year
             variable="tas",
             scenario="ssp585",
-            models=["ACCESS-CM2"]
+            models=["ACCESS-CM2"],
         )
-        
+
         with pytest.raises(ValueError) as excinfo:
             validate_inputs(schema, inputs)
         assert "Start year cannot be after end year" in str(excinfo.value)
@@ -387,9 +423,9 @@ class TestValidateInputs:
             end_year=2030,
             variable="invalid_var",  # Not in schema
             scenario="ssp585",
-            models=["ACCESS-CM2"]
+            models=["ACCESS-CM2"],
         )
-        
+
         with pytest.raises(ValueError) as excinfo:
             validate_inputs(schema, inputs)
         assert "invalid_var is not available" in str(excinfo.value)
@@ -402,9 +438,9 @@ class TestValidateInputs:
             end_year=2030,
             variable="tas",
             scenario="invalid_scenario",  # Not in schema
-            models=["ACCESS-CM2"]
+            models=["ACCESS-CM2"],
         )
-        
+
         with pytest.raises(ValueError) as excinfo:
             validate_inputs(schema, inputs)
         assert "invalid_scenario is not available" in str(excinfo.value)
@@ -418,9 +454,9 @@ class TestValidateInputs:
             end_year=2020,  # After historical_end_year
             variable="tas",
             scenario="historical",
-            models=["ACCESS-CM2"]
+            models=["ACCESS-CM2"],
         )
-        
+
         with pytest.raises(ValueError) as excinfo:
             validate_inputs(schema, inputs)
         assert "extends outside historical record" in str(excinfo.value)
@@ -433,8 +469,12 @@ class TestDownloadGranules:
     @patch("cmip6atlas.download.download_files_parallel")
     @patch("os.makedirs")
     def test_download_granules_basic(
-        self, mock_makedirs, mock_download_parallel, mock_get_files, 
-        mock_get_models, mock_create_client
+        self,
+        mock_makedirs,
+        mock_download_parallel,
+        mock_get_files,
+        mock_get_models,
+        mock_create_client,
     ):
         """Test basic download granules functionality."""
         # Setup mocks
@@ -443,10 +483,10 @@ class TestDownloadGranules:
         mock_get_models.return_value = ["ACCESS-CM2", "CESM2"]
         mock_get_files.return_value = [
             ("key1", "file1.nc", 1024),
-            ("key2", "file2.nc", 2048)
+            ("key2", "file2.nc", 2048),
         ]
         mock_download_parallel.return_value = 2
-        
+
         # Call the function
         download_granules(
             variable="tas",
@@ -454,9 +494,9 @@ class TestDownloadGranules:
             start_year=2020,
             end_year=2021,
             output_dir="/output",
-            skip_prompt=True
+            skip_prompt=True,
         )
-        
+
         # Verify the calls
         mock_create_client.assert_called_once()
         mock_get_models.assert_called_once()
@@ -471,8 +511,13 @@ class TestDownloadGranules:
     @patch("os.makedirs")
     @patch("builtins.input", return_value="y")
     def test_download_granules_with_prompt(
-        self, mock_input, mock_makedirs, mock_download_parallel, 
-        mock_get_files, mock_get_models, mock_create_client
+        self,
+        mock_input,
+        mock_makedirs,
+        mock_download_parallel,
+        mock_get_files,
+        mock_get_models,
+        mock_create_client,
     ):
         """Test download granules with user prompt."""
         # Setup mocks
@@ -481,7 +526,7 @@ class TestDownloadGranules:
         mock_get_models.return_value = ["ACCESS-CM2"]
         mock_get_files.return_value = [("key1", "file1.nc", 1024)]
         mock_download_parallel.return_value = 1
-        
+
         # Call the function
         download_granules(
             variable="tas",
@@ -489,9 +534,9 @@ class TestDownloadGranules:
             start_year=2020,
             end_year=2020,
             output_dir="/output",
-            skip_prompt=False  # Ask for confirmation
+            skip_prompt=False,  # Ask for confirmation
         )
-        
+
         # Verify the input prompt was called
         mock_input.assert_called_once()
         mock_download_parallel.assert_called_once()
@@ -503,8 +548,13 @@ class TestDownloadGranules:
     @patch("os.makedirs")
     @patch("builtins.input", return_value="n")
     def test_download_granules_cancel_prompt(
-        self, mock_input, mock_makedirs, mock_download_parallel, 
-        mock_get_files, mock_get_models, mock_create_client
+        self,
+        mock_input,
+        mock_makedirs,
+        mock_download_parallel,
+        mock_get_files,
+        mock_get_models,
+        mock_create_client,
     ):
         """Test canceling download from prompt."""
         # Setup mocks
@@ -512,7 +562,7 @@ class TestDownloadGranules:
         mock_create_client.return_value = mock_client
         mock_get_models.return_value = ["ACCESS-CM2"]
         mock_get_files.return_value = [("key1", "file1.nc", 1024)]
-        
+
         # Call the function
         download_granules(
             variable="tas",
@@ -520,9 +570,9 @@ class TestDownloadGranules:
             start_year=2020,
             end_year=2020,
             output_dir="/output",
-            skip_prompt=False  # Ask for confirmation
+            skip_prompt=False,  # Ask for confirmation
         )
-        
+
         # Verify the download was not called
         mock_input.assert_called_once()
         mock_download_parallel.assert_not_called()
@@ -533,8 +583,12 @@ class TestDownloadGranules:
     @patch("os.path.exists")
     @patch("os.path.getsize")
     def test_download_granules_all_exist(
-        self, mock_getsize, mock_exists, mock_get_files, 
-        mock_get_models, mock_create_client
+        self,
+        mock_getsize,
+        mock_exists,
+        mock_get_files,
+        mock_get_models,
+        mock_create_client,
     ):
         """Test when all files already exist."""
         # Setup mocks
@@ -544,7 +598,7 @@ class TestDownloadGranules:
         mock_get_files.return_value = [("key1", "file1.nc", 1024)]
         mock_exists.return_value = True
         mock_getsize.return_value = 1024  # Same size as in mock_get_files
-        
+
         # Call the function
         with patch("builtins.print") as mock_print:
             download_granules(
@@ -553,11 +607,13 @@ class TestDownloadGranules:
                 start_year=2020,
                 end_year=2020,
                 output_dir="/output",
-                skip_prompt=True
+                skip_prompt=True,
             )
-            
+
             # Check that the appropriate message was printed
-            mock_print.assert_any_call("\nAll files already exist locally. No downloads needed.")
+            mock_print.assert_any_call(
+                "\nAll files already exist locally. No downloads needed."
+            )
 
     @patch("cmip6atlas.download.create_s3_client")
     @patch("cmip6atlas.download.get_available_models")
@@ -571,7 +627,7 @@ class TestDownloadGranules:
         mock_create_client.return_value = mock_client
         mock_get_models.return_value = ["ACCESS-CM2"]
         mock_get_files.return_value = []  # No files found
-        
+
         # Call the function
         with patch("builtins.print") as mock_print:
             download_granules(
@@ -579,11 +635,13 @@ class TestDownloadGranules:
                 scenario="ssp585",
                 start_year=2020,
                 output_dir="/output",
-                skip_prompt=True
+                skip_prompt=True,
             )
-            
+
             # Check that the appropriate message was printed
-            mock_print.assert_any_call("No files found matching your criteria. Please check your parameters.")
+            mock_print.assert_any_call(
+                "No files found matching your criteria. Please check your parameters."
+            )
 
     @patch("cmip6atlas.download.create_s3_client")
     @patch("cmip6atlas.download.get_available_models")
@@ -595,11 +653,13 @@ class TestDownloadGranules:
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
         mock_get_models.return_value = ["ACCESS-CM2", "CESM2", "MIROC6"]
-        
+
         # Setup further mocks to prevent execution beyond model filtering
-        with patch("cmip6atlas.download.get_available_files", return_value=[]), \
-             patch("builtins.print"):
-            
+        with (
+            patch("cmip6atlas.download.get_available_files", return_value=[]),
+            patch("builtins.print"),
+        ):
+
             # Verify only valid models are used (intersection with available_models)
             with patch("cmip6atlas.download.validate_inputs") as mock_validate:
                 # Call the function with specific models
@@ -609,7 +669,7 @@ class TestDownloadGranules:
                     start_year=2020,
                     output_dir="/output",
                     models=["ACCESS-CM2", "UNKNOWN-MODEL"],  # One valid, one invalid
-                    skip_prompt=True
+                    skip_prompt=True,
                 )
                 assert mock_validate.call_args[0][1].models == ["ACCESS-CM2"]
 
@@ -623,11 +683,13 @@ class TestDownloadGranules:
         mock_client = MagicMock()
         mock_create_client.return_value = mock_client
         mock_get_models.return_value = ["ACCESS-CM2", "CESM2", "MIROC6"]
-        
+
         # Setup further mocks to prevent execution beyond model filtering
-        with patch("cmip6atlas.download.get_available_files", return_value=[]), \
-             patch("builtins.print"):
-            
+        with (
+            patch("cmip6atlas.download.get_available_files", return_value=[]),
+            patch("builtins.print"),
+        ):
+
             # Verify the correct models are used (set difference)
             # Use a separate patch to check what gets passed to validate_inputs
             with patch("cmip6atlas.download.validate_inputs") as mock_validate:
@@ -638,7 +700,7 @@ class TestDownloadGranules:
                     start_year=2020,
                     output_dir="/output",
                     exclude_models=["CESM2"],
-                    skip_prompt=True
+                    skip_prompt=True,
                 )
                 # Check that CESM2 is not in the models list
                 models_used = mock_validate.call_args[0][1].models
@@ -658,7 +720,7 @@ class TestDownloadGranules:
                 start_year=2020,
                 models=["ACCESS-CM2"],
                 exclude_models=["CESM2"],
-                schema=schema
+                schema=schema,
             )
         assert "cannot exclude and include models in same query" in str(excinfo.value)
 
@@ -667,59 +729,101 @@ class TestCLI:
     @patch("cmip6atlas.download.download_granules")
     def test_cli_basic(self, mock_download):
         """Test basic CLI functionality."""
-        with patch("sys.argv", [
-            "script.py",
-            "--variable", "tas",
-            "--start-year", "2020",
-            "--scenario", "ssp585"
-        ]):
+        with patch(
+            "sys.argv",
+            [
+                "script.py",
+                "--variable",
+                "tas",
+                "--start-year",
+                "2020",
+                "--scenario",
+                "ssp585",
+            ],
+        ):
             from cmip6atlas.download import cli
+
             cli()
-            
+
             # Verify download_granules was called with correct args
             mock_download.assert_called_once_with(
-                "tas", "ssp585", 2020, None, "./nex-gddp-data", None, None, 5, False
+                "tas", "ssp585", 2020, None, "./nex-gddp-cmip6", None, None, 5, False
             )
 
     @patch("cmip6atlas.download.download_granules")
     def test_cli_full_options(self, mock_download):
         """Test CLI with all options specified."""
-        with patch("sys.argv", [
-            "script.py",
-            "--variable", "tas",
-            "--start-year", "2020",
-            "--end-year", "2030",
-            "--scenario", "ssp585",
-            "--models", "ACCESS-CM2", "CESM2",
-            "--output-dir", "/custom/output",
-            "--max-workers", "10",
-            "--yes"
-        ]):
+        with patch(
+            "sys.argv",
+            [
+                "script.py",
+                "--variable",
+                "tas",
+                "--start-year",
+                "2020",
+                "--end-year",
+                "2030",
+                "--scenario",
+                "ssp585",
+                "--models",
+                "ACCESS-CM2",
+                "CESM2",
+                "--output-dir",
+                "/custom/output",
+                "--max-workers",
+                "10",
+                "--yes",
+            ],
+        ):
             from cmip6atlas.download import cli
+
             cli()
-            
+
             # Verify download_granules was called with correct args
             mock_download.assert_called_once_with(
-                "tas", "ssp585", 2020, 2030, "/custom/output", 
-                ["ACCESS-CM2", "CESM2"], None, 10, True
+                "tas",
+                "ssp585",
+                2020,
+                2030,
+                "/custom/output",
+                ["ACCESS-CM2", "CESM2"],
+                None,
+                10,
+                True,
             )
 
     @patch("cmip6atlas.download.download_granules")
     def test_cli_exclude_models(self, mock_download):
         """Test CLI with exclude-models option."""
-        with patch("sys.argv", [
-            "script.py",
-            "--variable", "tas",
-            "--start-year", "2020",
-            "--scenario", "ssp585",
-            "--exclude-models", "CESM2", "MIROC6",
-            "--yes"
-        ]):
+        with patch(
+            "sys.argv",
+            [
+                "script.py",
+                "--variable",
+                "tas",
+                "--start-year",
+                "2020",
+                "--scenario",
+                "ssp585",
+                "--exclude-models",
+                "CESM2",
+                "MIROC6",
+                "--yes",
+            ],
+        ):
             from cmip6atlas.download import cli
+
             cli()
-            
+
             # Verify download_granules was called with correct args
             mock_download.assert_called_once_with(
-                "tas", "ssp585", 2020, None, "./nex-gddp-data", 
-                None, ["CESM2", "MIROC6"], 5, True
+                "tas",
+                "ssp585",
+                2020,
+                None,
+                "./nex-gddp-cmip6",
+                None,
+                ["CESM2", "MIROC6"],
+                5,
+                True,
             )
