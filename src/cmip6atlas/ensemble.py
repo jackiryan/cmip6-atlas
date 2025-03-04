@@ -93,8 +93,8 @@ def create_cmip6_ensemble_mean(
         xr.Dataset: a netCDF dataset with the combined mean/std. dev. of the model means
     """
     # Storage for annual/subsetted means from each model
-    model_means = []
-    model_names = []
+    model_means: list[xr.DataArray] = []
+    model_names: list[str] = []
 
     # Determine period name for metadata
     if subset is not None:

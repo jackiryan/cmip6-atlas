@@ -107,7 +107,7 @@ def get_available_files(
             )
         )
         start_year = hist_end_year + 1
-    prefix_str = str(schema["prefix"]).rstrip("/")
+    # prefix_str = str(schema["prefix"]).rstrip("/")
 
     prefix = (
         f"{schema['prefix']}/{model}/{scenario}/{schema['realization']}/{variable}/"
