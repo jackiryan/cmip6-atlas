@@ -18,5 +18,4 @@ GDDP_CMIP6_SCHEMA = {
     "min_year": 1950,
     "max_year": 2100,
     "historical_end_year": 2014,
-    "realization": "r1i1p1f1",
 }

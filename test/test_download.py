@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock, call, mock_open
 from cmip6atlas.download import (
     create_s3_client,
     get_available_models,
+    get_available_realizations,
     get_available_files,
     download_file,
     download_files_parallel,
@@ -14,7 +15,10 @@ from cmip6atlas.download import (
     download_granules,
     GranuleSubset,
     DownloadError,
-    GDDP_CMIP6_SCHEMA,
+)
+
+from cmip6atlas.schema import (
+    GDDP_CMIP6_SCHEMA
 )
 
 
@@ -58,6 +62,78 @@ class TestGetAvailableModels:
             get_available_models(mock_client, "test-bucket", "NEX-GDDP-CMIP6")
 
         assert "could not retrieve available models" in str(excinfo.value)
+
+
+class TestGetAvailableRealizations:
+    def test_get_available_realizations_success(self):
+        """Test successful retrieval of available realizations."""
+        mock_client = MagicMock()
+        mock_client.list_objects_v2.return_value = {
+            "CommonPrefixes": [
+                {"Prefix": "NEX-GDDP-CMIP6/ACCESS-CM2/ssp585/r1i1p1f1/"},
+                {"Prefix": "NEX-GDDP-CMIP6/ACCESS-CM2/ssp585/r2i1p1f1/"},
+                {"Prefix": "NEX-GDDP-CMIP6/ACCESS-CM2/ssp585/r1i1p1f2/"},
+            ]
+        }
+
+        realization = get_available_realizations(
+            mock_client, "test-bucket", "NEX-GDDP-CMIP6", "ACCESS-CM2", "ssp585"
+        )
+
+        # Should return the second realization when sorted (r2i1p1f1)
+        assert realization == "r2i1p1f1"
+        mock_client.list_objects_v2.assert_called_once_with(
+            Bucket="test-bucket", 
+            Prefix="NEX-GDDP-CMIP6/ACCESS-CM2/ssp585/", 
+            Delimiter="/"
+        )
+
+    def test_get_available_realizations_single(self):
+        """Test retrieval when only one realization is available."""
+        mock_client = MagicMock()
+        mock_client.list_objects_v2.return_value = {
+            "CommonPrefixes": [
+                {"Prefix": "NEX-GDDP-CMIP6/MIROC6/historical/r1i2p1f1/"},
+            ]
+        }
+
+        realization = get_available_realizations(
+            mock_client, "test-bucket", "NEX-GDDP-CMIP6", "MIROC6", "historical"
+        )
+
+        assert realization == "r1i2p1f1"
+
+    def test_get_available_realizations_empty(self):
+        """Test retrieval when no realizations are found."""
+        mock_client = MagicMock()
+        mock_client.list_objects_v2.return_value = {
+            "CommonPrefixes": []
+        }
+
+        # When no realizations are found, an empty list is sorted, 
+        # which should raise an IndexError
+        with pytest.raises(IndexError):
+            get_available_realizations(
+                mock_client, "test-bucket", "NEX-GDDP-CMIP6", "MODEL", "scenario"
+            )
+
+    def test_get_available_realizations_missing_prefix(self):
+        """Test handling of malformed CommonPrefixes entries."""
+        mock_client = MagicMock()
+        mock_client.list_objects_v2.return_value = {
+            "CommonPrefixes": [
+                {"Prefix": None},  # Missing Prefix
+                {"NotPrefix": "something"},  # Wrong key
+                {"Prefix": "NEX-GDDP-CMIP6/TaiESM1/ssp585/r1i1p1f1/"},  # Valid entry
+            ]
+        }
+
+        realization = get_available_realizations(
+            mock_client, "test-bucket", "NEX-GDDP-CMIP6", "TaiESM1", "ssp585"
+        )
+
+        # Should only process the valid prefix and return r1i1p1f1
+        assert realization == "r1i1p1f1"
 
 
 class TestGetAvailableFiles:
@@ -119,43 +195,44 @@ class TestGetAvailableFiles:
 
     def test_get_available_files_cross_historical(self):
         """Test retrieval of files spanning historical and projected periods."""
-        mock_client = MagicMock()
+        with patch("cmip6atlas.download.get_available_realizations", return_value="r1i1p1f1"):
+            mock_client = MagicMock()
 
-        # First call for historical data
-        mock_client.list_objects_v2.side_effect = [
-            {
-                "Contents": [
-                    {
-                        "Key": "NEX-GDDP-CMIP6/ACCESS-CM2/historical/r1i1p1f1/tas/tas_day_ACCESS-CM2_historical_r1i1p1f1_gn_2013.nc",
-                        "Size": 1024000,
-                    },
-                    {
-                        "Key": "NEX-GDDP-CMIP6/ACCESS-CM2/historical/r1i1p1f1/tas/tas_day_ACCESS-CM2_historical_r1i1p1f1_gn_2014.nc",
-                        "Size": 1024000,
-                    },
-                ]
-            },
-            # Second call for projected data
-            {
-                "Contents": [
-                    {
-                        "Key": "NEX-GDDP-CMIP6/ACCESS-CM2/ssp585/r1i1p1f1/tas/tas_day_ACCESS-CM2_ssp585_r1i1p1f1_gn_2015.nc",
-                        "Size": 1024000,
-                    },
-                    {
-                        "Key": "NEX-GDDP-CMIP6/ACCESS-CM2/ssp585/r1i1p1f1/tas/tas_day_ACCESS-CM2_ssp585_r1i1p1f1_gn_2016.nc",
-                        "Size": 1024000,
-                    },
-                ]
-            },
-        ]
-
-        schema = GDDP_CMIP6_SCHEMA.copy()
-        schema["historical_end_year"] = 2014  # Ensure this is set correctly
-
-        files = get_available_files(
-            mock_client, schema, "ACCESS-CM2", "ssp585", "tas", 2013, 2016
-        )
+            # First call for historical data
+            mock_client.list_objects_v2.side_effect = [
+                {
+                    "Contents": [
+                        {
+                            "Key": "NEX-GDDP-CMIP6/ACCESS-CM2/historical/r1i1p1f1/tas/tas_day_ACCESS-CM2_historical_r1i1p1f1_gn_2013.nc",
+                            "Size": 1024000,
+                        },
+                        {
+                            "Key": "NEX-GDDP-CMIP6/ACCESS-CM2/historical/r1i1p1f1/tas/tas_day_ACCESS-CM2_historical_r1i1p1f1_gn_2014.nc",
+                            "Size": 1024000,
+                        },
+                    ]
+                },
+                # Second call for projected data
+                {
+                    "Contents": [
+                        {
+                            "Key": "NEX-GDDP-CMIP6/ACCESS-CM2/ssp585/r1i1p1f1/tas/tas_day_ACCESS-CM2_ssp585_r1i1p1f1_gn_2015.nc",
+                            "Size": 1024000,
+                        },
+                        {
+                            "Key": "NEX-GDDP-CMIP6/ACCESS-CM2/ssp585/r1i1p1f1/tas/tas_day_ACCESS-CM2_ssp585_r1i1p1f1_gn_2016.nc",
+                            "Size": 1024000,
+                        },
+                    ]
+                },
+            ]
+    
+            schema = GDDP_CMIP6_SCHEMA.copy()
+            schema["historical_end_year"] = 2014  # Ensure this is set correctly
+            
+            files = get_available_files(
+                mock_client, schema, "ACCESS-CM2", "ssp585", "tas", 2013, 2016
+            )
 
         # Should get 4 files spanning historical and projected periods
         assert len(files) == 4

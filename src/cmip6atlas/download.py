@@ -69,6 +69,32 @@ def get_available_models(s3_client: S3Client, bucket: str, prefix: str) -> list[
 
     return models
 
+def get_available_realizations(
+    s3_client: S3Client,
+    bucket: str,
+    prefix: str,
+    model: str,
+    scenario: str
+) -> str:
+    """
+    Get the list of available realizations (processing versions) for a model and scenario.
+    Returns only the highest one.
+    """
+    path_prefix = f"{prefix}/{model}/{scenario}/"
+    response = s3_client.list_objects_v2(
+        Bucket=bucket, Prefix=path_prefix, Delimiter="/"
+    )
+
+    realizations: list[str] = []
+    for found_dir in response.get("CommonPrefixes", []):
+        dir_str = found_dir.get("Prefix")
+        if dir_str is not None:
+            realization = dir_str.split("/")[-2]
+            realizations.append(realization)
+
+    return sorted(realizations)[-1]
+
+
 
 def get_available_files(
     s3_client: S3Client,
@@ -107,10 +133,21 @@ def get_available_files(
             )
         )
         start_year = hist_end_year + 1
-    # prefix_str = str(schema["prefix"]).rstrip("/")
+    try:
+        realization = get_available_realizations(
+            s3_client,
+            schema["bucket"],
+            schema['prefix'],
+            model,
+            scenario
+        )
+    except Exception as e:
+        # Backup default value just in case
+        print(f"Warning: Could not find a processing version ID for {model}/{scenario}")
+        realization = "r1i1p1f1"
 
     prefix = (
-        f"{schema['prefix']}/{model}/{scenario}/{schema['realization']}/{variable}/"
+        f"{schema['prefix']}/{model}/{scenario}/{realization}/{variable}/"
     )
 
     response = s3_client.list_objects_v2(Bucket=schema["bucket"], Prefix=prefix)
