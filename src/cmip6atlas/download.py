@@ -310,7 +310,7 @@ def download_granules(
     max_workers: int = 5,
     skip_prompt: bool = True,
     schema: dict[str, Any] | None = None,
-) -> None:
+) -> list[str]:
     """
     Download a set of granules (netCDF files) from the NEX-GDDP-CMIP6 bucket, with
     default behavior to pull all available models for a given variable/scenario
@@ -349,7 +349,7 @@ def download_granules(
             querying a different s3 bucket. See GDDP_CMIP6_SCHEMA for expected format.
 
     Returns:
-        None
+        list[str]: A list of filepaths of the downloaded files
 
     Raises:
         ValueError: If any of the query input arguments are invalid.
@@ -388,7 +388,9 @@ def download_granules(
     # Will throw ValueError on validation failure
     validate_inputs(schema, inputs)
 
-    files_to_download = []
+    # The list will contain the s3 key, the basename, and the file size
+    # file size is used to prompt the user on how much data will be downloaded 
+    files_to_download: list[tuple[str, str, int]] = []
     total_size = 0
     existing_files_size = 0
     print("Searching for granules matching criteria...")
@@ -436,6 +438,7 @@ def download_granules(
         s3_client, bucket, files_to_download, output_dir, max_workers
     )
     print(f"\nDownload complete. {download_count} files downloaded.")
+    return [os.path.join(output_dir, t[1]) for t in files_to_download]
 
 
 def cli() -> None:
