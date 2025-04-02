@@ -391,6 +391,7 @@ def download_granules(
     # The list will contain the s3 key, the basename, and the file size
     # file size is used to prompt the user on how much data will be downloaded 
     files_to_download: list[tuple[str, str, int]] = []
+    found_files: list[str] = []
     total_size = 0
     existing_files_size = 0
     print("Searching for granules matching criteria...")
@@ -412,6 +413,7 @@ def download_granules(
             else:
                 total_size += size
                 files_to_download.append((key, filename, size))
+            found_files.append(local_path)
 
     if not files_to_download and existing_files_size == 0:
         print("No files found matching your criteria. Please check your parameters.")
@@ -428,7 +430,7 @@ def download_granules(
             return
     elif files_to_download == []:
         print("\nAll files already exist locally. No downloads needed.")
-        return
+        return found_files
 
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
@@ -438,7 +440,7 @@ def download_granules(
         s3_client, bucket, files_to_download, output_dir, max_workers
     )
     print(f"\nDownload complete. {download_count} files downloaded.")
-    return [os.path.join(output_dir, t[1]) for t in files_to_download]
+    return found_files
 
 
 def cli() -> None:

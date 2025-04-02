@@ -1,6 +1,6 @@
 import os
 from cmip6atlas.download import download_granules
-from cmip6atlas.metrics.config import MetricDefinition, CLIMATE_METRICS
+from cmip6atlas.metrics.config import CLIMATE_METRICS
 
 def calculate_climate_metric(
     metric_name: str,
@@ -13,11 +13,11 @@ def calculate_climate_metric(
 ) -> str:
     """
     Calculate a climate metric for a specified time period for a specific model.
-    This operation is down per model to ensure that the ensemble mean is derived
+    This operation is performed per model to ensure that the ensemble mean is derived
     from an output distribution of the calculated metric across each model. For
     linear operations like mean temperature, this is identical to averaging each
     model 1 year or 1 day at a time, then averaging X years or X days together.
-    For non-linear operations however, this method is more valid.
+    For non-linear operations however this method is more valid.
     
     Args:
         metric_name (str): Name of the metric to calculate
@@ -47,7 +47,7 @@ def calculate_climate_metric(
     if (temporal_window.is_seasonal() and 
         temporal_window.season.spans_year_boundary and
         any(m > 9 for m in temporal_window.season.nh_months + temporal_window.season.sh_months)):
-        # Adjust start year to get December from previous year if needed
+        # Adjust start year to get December from previous year (e.g., northern winter)
         effective_start_year = start_year - 1
     else:
         effective_start_year = start_year
@@ -67,8 +67,8 @@ def calculate_climate_metric(
 
     # Calculate the metric using all required variables
     metric_result = metric_def.calculation_func(
-        ensemble_datasets, 
-        # Pass additional parameters if needed
+        model_datasets, 
+        # seasonal and threshold parameters default to None
         season=metric_def.temporal_window.season if metric_def.temporal_window.is_seasonal() else None,
         threshold=metric_def.threshold if metric_def.threshold_based else None
     )
