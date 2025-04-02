@@ -117,6 +117,7 @@ def extract_seasonal_data(
     
     return result
 
+
 def calculate_seasonal_temp_normal(
     datasets: dict[str, list[xr.Dataset]],
     season: SeasonDefinition,
@@ -126,7 +127,7 @@ def calculate_seasonal_temp_normal(
     Calculate seasonal temperature normal, considering hemisphere differences.
     
     Args:
-        datasets: Dictionary mapping variables to lists of annual datasets
+        datasets: Dictionary mapping variables to lists of annual dataset filenames
         season: Season definition
         **kwargs: Additional parameters
         
@@ -171,8 +172,69 @@ def calculate_seasonal_temp_normal(
     
     return result
 
+
+def calculate_seasonal_precip_total(
+    datasets: dict[str, list[str]],
+    season: SeasonDefinition,
+    **kwargs
+) -> xr.Dataset:
+    """
+    Calculate seasonal precipitation total, considering hemisphere differences.
+    
+    Args:
+        datasets: Dictionary mapping variables to lists of annual dataset filenames
+        season: Season definition
+        **kwargs: Additional parameters
+        
+    Returns:
+        Dataset with seasonal precipitation totals
+    """
+    variable = "pr"  # Precipitation variable
+    # Sometimes the model has a bad pixel that should be excluded
+    # The rainiest place on Earth is about 12000mm/yr, so use this
+    # heuristic to filter unphysical results
+    max_physical_precip = 15000.0
+    precip_datasets = datasets[variable]
+    
+    # Extract the seasonal data for each year
+    seasonal_data = []
+    for fname in precip_datasets:
+        ds = xr.open_dataset(fname)
+
+        # Get the year from dataset
+        year: int = ds.time.dt.year.values[0].item()
+        
+        # Extract seasonal data
+        season_ds = extract_seasonal_data(ds, variable, season, year)
+        # Convert from kg/m²/s to mm/day
+        season_ds_mm = process_variable(season_ds, variable)
+
+        year_sums = season_ds_mm[variable].sum(dim="time", skipna=True)
+        ocean_mask = season_ds_mm[variable].isnull().all(dim="time")
+        year_da = year_sums.where(~ocean_mask, np.nan)
+
+        seasonal_data.append(year_da)
+    
+    # Combine all years of seasonal data
+    combined = xr.concat(seasonal_data, dim="year")
+    combined = combined.where(combined <= max_physical_precip)
+    
+    # Calculate the average seasonal total across years
+    avg_season_total = combined.mean(dim="year")
+    
+    # Create result dataset
+    result = avg_season_total.to_dataset(name=f"{season.name}_precip_total")
+
+    # Add metadata
+    result[f"{season.name}_precip_total"].attrs["units"] = "mm"
+    result[f"{season.name}_precip_total"].attrs["long_name"] = f"{season.name.capitalize()} Precipitation Total"
+    result.attrs["season"] = season.name
+    
+    return result
+
+
 def calculate_threshold_days(
-    datasets: dict[str, list[xr.Dataset]],
+    datasets: dict[str, list[str]],
     threshold: float,
     operation: str = "gt",  # 'gt' for greater than, 'lt' for less than, etc.
     **kwargs
@@ -181,7 +243,7 @@ def calculate_threshold_days(
     Calculate the average number of days per year that meet a threshold condition.
     
     Args:
-        datasets: Dictionary mapping variables to lists of annual datasets
+        datasets: Dictionary mapping variables to lists of annual dataset filenames
         threshold: Threshold value to compare against
         operation: Comparison operation ('gt', 'lt', 'ge', 'le')
         **kwargs: Additional parameters
@@ -196,7 +258,9 @@ def calculate_threshold_days(
     # Calculate threshold days for each year
     annual_threshold_days = []
     
-    for ds in variable_datasets:
+    for fname in variable_datasets:
+        ds = xr.open_dataset(fname)
+
         # Apply threshold operation
         if operation == "gt":
             threshold_met = ds[variable] > threshold
@@ -251,7 +315,7 @@ def calculate_growing_season_length(
     Calculate average growing season length (consecutive days above base temperature).
     
     Args:
-        datasets: Dictionary mapping variables to lists of annual datasets
+        datasets: Dictionary mapping variables to lists of annual dataset filenames
         base_temp: Base temperature defining growing season (typically 5°C or 10°C)
         min_length: Minimum consecutive days to count as growing season
         **kwargs: Additional parameters
@@ -265,7 +329,9 @@ def calculate_growing_season_length(
     # Calculate growing season length for each year
     annual_growing_seasons = []
     
-    for ds in temp_datasets:
+    for fname in temp_datasets:
+        ds = xr.open_dataset(fname)
+
         # Get daily temperatures above base temperature
         above_base = ds[variable] > base_temp
         

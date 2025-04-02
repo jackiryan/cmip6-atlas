@@ -56,20 +56,18 @@ CLIMATE_METRICS = {
         output_units="°C",
         metadata={"long_name": "Annual Temperature Normal"}
     ),
-    '''
     "annual_precip_normal": MetricDefinition(
         name="annual_precip_normal",
         description="Annual precipitation normal (30-year average)",
         variables=["pr"],
         temporal_window=TemporalWindow(
             season=SEASON_DEFINITIONS[Season.ANNUAL],
-            years=30
+            years=5
         ),
-        calculation_func=lambda datasets, **kwargs: calculate_precip_normal(datasets, **kwargs),
+        calculation_func=lambda datasets, **kwargs: calculate_seasonal_precip_total(datasets, **kwargs),
         output_units="mm/year",
         metadata={"long_name": "Annual Precipitation Normal"}
     ),
-    '''
     "winter_mean_temp": MetricDefinition(
         name="winter_mean_temp",
         description="Winter (DJF in NH, JJA in SH) mean temperature normal",

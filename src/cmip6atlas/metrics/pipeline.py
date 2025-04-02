@@ -1,6 +1,7 @@
 import os
 from cmip6atlas.download import download_granules
 from cmip6atlas.metrics.config import CLIMATE_METRICS
+from cmip6atlas.metrics.convert import xr_to_geotiff
 
 def calculate_climate_metric(
     metric_name: str,
@@ -10,14 +11,10 @@ def calculate_climate_metric(
     model: str,
     base_dir: str = "./nex-gddp-data",
     output_dir: str = "./climate-metrics",
+    output_format: str = "geotiff"
 ) -> str:
     """
     Calculate a climate metric for a specified time period for a specific model.
-    This operation is performed per model to ensure that the ensemble mean is derived
-    from an output distribution of the calculated metric across each model. For
-    linear operations like mean temperature, this is identical to averaging each
-    model 1 year or 1 day at a time, then averaging X years or X days together.
-    For non-linear operations however this method is more valid.
     
     Args:
         metric_name (str): Name of the metric to calculate
@@ -27,9 +24,10 @@ def calculate_climate_metric(
         model (str): Model to compute this climate metric
         base_dir (str): Directory for raw data
         output_dir (str): Directory for output metrics
+        output_format (str): Format for output - 'netcdf', 'geotiff', or 'both'
         
     Returns:
-        str: Path to the output metric file
+        str: Path to the output metric file (NetCDF or GeoTIFF based on output_format)
     """
     # Get metric definition
     if metric_name not in CLIMATE_METRICS:
@@ -89,12 +87,28 @@ def calculate_climate_metric(
         season_str = f"_{metric_def.temporal_window.season.name}"
     else:
         season_str = ""
-        
-    output_file = os.path.join(
-        output_dir, 
-        f"{metric_name}{season_str}_{scenario}_{start_year}-{end_year}.nc"
-    )
-    metric_result.to_netcdf(output_file)
     
-    return output_file
+    output_path = None
+    
+    # Handle different output formats
+    if output_format.lower() in ["netcdf", "both"]:
+        netcdf_file = os.path.join(
+            output_dir, 
+            f"{metric_name}{season_str}_{scenario}_{start_year}-{end_year}.nc"
+        )
+        metric_result.to_netcdf(netcdf_file)
+        output_path = netcdf_file
+    
+    if output_format.lower() in ["geotiff", "both"]:
+        # Get the main variable name from the dataset
+        if len(metric_result.data_vars) > 0:
+            main_var = list(metric_result.data_vars)[0]
+            geotiff_file = os.path.join(
+                output_dir, 
+                f"{metric_name}{season_str}_{scenario}_{start_year}-{end_year}.tif"
+            )
+            xr_to_geotiff(metric_result, geotiff_file, variable_name=main_var)
+            output_path = geotiff_file
+    
+    return output_path
     

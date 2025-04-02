@@ -13,10 +13,8 @@ def process_temperature(ds: xr.Dataset, variable: str, **kwargs) -> xr.Dataset:
 def process_precipitation(ds: xr.Dataset, variable: str, **kwargs) -> xr.Dataset:
     """Process precipitation variable (pr)."""
     # CMIP6 precipitation is in kg/m²/s, which is equivalent to mm/s
-    # Often useful to convert to mm/day
-    if kwargs.get("convert_to_mm_day", False):
-        ds[variable] = ds[variable] * 86400  # seconds in a day
-        ds[variable].attrs["units"] = "mm/day"
+    ds[variable] = ds[variable] * 86400  # seconds in a day
+    ds[variable].attrs["units"] = "mm/day"
     return ds
 
 def process_humidity(ds: xr.Dataset, variable: str, **kwargs) -> xr.Dataset:
