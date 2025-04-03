@@ -47,7 +47,7 @@ CLIMATE_METRICS = {
         variables=["tas"],
         temporal_window=TemporalWindow(
             season=SEASON_DEFINITIONS[Season.ANNUAL],
-            years=5
+            years=30
         ),
         calculation_func=lambda datasets, **kwargs: calculate_seasonal_temp_normal(
             datasets,
@@ -62,7 +62,7 @@ CLIMATE_METRICS = {
         variables=["pr"],
         temporal_window=TemporalWindow(
             season=SEASON_DEFINITIONS[Season.ANNUAL],
-            years=5
+            years=30
         ),
         calculation_func=lambda datasets, **kwargs: calculate_seasonal_precip_total(datasets, **kwargs),
         output_units="mm/year",

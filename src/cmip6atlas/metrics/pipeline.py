@@ -82,19 +82,13 @@ def calculate_climate_metric(
     # Save the result
     os.makedirs(output_dir, exist_ok=True)
     
-    # Generate appropriate filename including season if applicable
-    if metric_def.temporal_window.is_seasonal():
-        season_str = f"_{metric_def.temporal_window.season.name}"
-    else:
-        season_str = ""
-    
     output_path = None
     
     # Handle different output formats
     if output_format.lower() in ["netcdf", "both"]:
         netcdf_file = os.path.join(
             output_dir, 
-            f"{metric_name}{season_str}_{scenario}_{start_year}-{end_year}.nc"
+            f"{metric_name}_{model}_{scenario}_{start_year}-{end_year}.nc"
         )
         metric_result.to_netcdf(netcdf_file)
         output_path = netcdf_file
@@ -105,10 +99,11 @@ def calculate_climate_metric(
             main_var = list(metric_result.data_vars)[0]
             geotiff_file = os.path.join(
                 output_dir, 
-                f"{metric_name}{season_str}_{scenario}_{start_year}-{end_year}.tif"
+                f"{metric_name}_{model}_{scenario}_{start_year}-{end_year}.tif"
             )
             xr_to_geotiff(metric_result, geotiff_file, variable_name=main_var)
             output_path = geotiff_file
+            metric_result.close()
     
     return output_path
     

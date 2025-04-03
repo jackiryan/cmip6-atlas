@@ -214,6 +214,7 @@ def calculate_seasonal_precip_total(
         year_da = year_sums.where(~ocean_mask, np.nan)
 
         seasonal_data.append(year_da)
+        ds.close()
     
     # Combine all years of seasonal data
     combined = xr.concat(seasonal_data, dim="year")
