@@ -42,6 +42,7 @@ import os
 import warnings
 import xarray as xr
 
+from cmip6atlas.time_utils import time_subset
 from cmip6atlas.cli import get_parser
 
 warnings.filterwarnings("ignore")
@@ -108,21 +109,6 @@ def create_cmip6_ensemble_mean(
                 f"subset period {subset[0].strftime('%m-%d')} to "
                 f"{subset[1].strftime('%m-%d')}"
             )
-        # Create a backup subsets for models with non-standard date formats
-        end_day = subset[1].day
-        # DatetimeNoLeap throws ValueError if given a leap day
-        if subset[1].month == 2 and end_day == 29:
-            end_day -= 1
-        subset_noleap = (
-            DatetimeNoLeap(subset[0].year, subset[0].month, subset[0].day),
-            DatetimeNoLeap(subset[1].year, subset[1].month, end_day),
-        )
-        # Technically this breaks subsets that are not to the end of a month, but
-        # there is no practical reason to specify such a subset for this analysis.
-        subset_360 = (
-            Datetime360Day(subset[0].year, subset[0].month, subset[0].day),
-            Datetime360Day(subset[1].year, subset[1].month, 30),
-        )
     else:
         period_name = "ann"
         period_description = "annual average"
@@ -143,14 +129,9 @@ def create_cmip6_ensemble_mean(
 
         # Apply temporal subset if provided
         if subset is not None:
-            # Some models do not account for leap days and use the
-            # cftime.DatetimeNoLeap date format
-            if type(ds.time.data[0]) == DatetimeNoLeap:
-                ds_subset = ds.sel(time=slice(subset_noleap[0], subset_noleap[1]))
-            elif type(ds.time.data[0]) == Datetime360Day:
-                ds_subset = ds.sel(time=slice(subset_360[0], subset_360[1]))
-            else:
-                ds_subset = ds.sel(time=slice(subset[0], subset[1]))
+            # Use the time_utils function to subset the ds, since not all
+            # models use the same calendar
+            ds_subset = time_subset(ds, subset[0], subset[1])
 
             # Calculate model mean for the subset period
             model_mean = ds_subset[variable].mean(dim="time")
