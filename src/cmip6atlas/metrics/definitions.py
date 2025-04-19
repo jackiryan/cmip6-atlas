@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
 from enum import Enum
-import numpy as np
 import numpy.typing as npt
 from typing import Callable, Any
+import xarray as xr
 
 
 class Season(Enum):
@@ -71,7 +71,7 @@ class MetricDefinition:
     description: str
     variables: list[str]  # List of CMIP6 variables needed for metric calculation
     temporal_window: TemporalWindow  # Temporal aggregation window
-    calculation_func: Callable  # Function to compute metric
+    calculation_func: Callable[..., xr.Dataset]  # Function to compute metric
     output_units: str
     threshold_based: bool = False  # Is this a threshold-based metric (e.g., frost days)
     threshold: float | None = None  # Threshold value if applicable

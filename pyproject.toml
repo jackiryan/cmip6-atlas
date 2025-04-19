@@ -48,7 +48,7 @@ create_windowed_average = "cmip6atlas.window:cli"
 name = "cmip6atlas"
 
 [tool.flit.sdist]
-include = ["py.typed"]
+include = ["py.typed", "src/cmip6atlas/gadm_countries.csv"]
 
 [tool.pytest.ini_options]
 addopts = "--cov --cov-report=term-missing --cov-report=xml --cov-report=html --import-mode=importlib"

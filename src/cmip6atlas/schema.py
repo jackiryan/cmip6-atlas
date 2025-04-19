@@ -1,6 +1,6 @@
 """Object containing data organization of CMIP6 model outputs on NEX bucket."""
 
-GDDP_CMIP6_SCHEMA = {
+GDDP_CMIP6_SCHEMA: dict[str, str | list[str] | int] = {
     "bucket": "nex-gddp-cmip6",
     "prefix": "NEX-GDDP-CMIP6",
     "variables": [

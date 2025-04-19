@@ -69,12 +69,9 @@ def get_available_models(s3_client: S3Client, bucket: str, prefix: str) -> list[
 
     return models
 
+
 def get_available_realizations(
-    s3_client: S3Client,
-    bucket: str,
-    prefix: str,
-    model: str,
-    scenario: str
+    s3_client: S3Client, bucket: str, prefix: str, model: str, scenario: str
 ) -> str:
     """
     Get the list of available realizations (processing versions) for a model and scenario.
@@ -93,7 +90,6 @@ def get_available_realizations(
             realizations.append(realization)
 
     return sorted(realizations)[-1]
-
 
 
 def get_available_files(
@@ -135,20 +131,14 @@ def get_available_files(
         start_year = hist_end_year + 1
     try:
         realization = get_available_realizations(
-            s3_client,
-            schema["bucket"],
-            schema['prefix'],
-            model,
-            scenario
+            s3_client, schema["bucket"], schema["prefix"], model, scenario
         )
     except Exception as e:
         # Backup default value just in case
         print(f"Warning: Could not find a processing version ID for {model}/{scenario}")
         realization = "r1i1p1f1"
 
-    prefix = (
-        f"{schema['prefix']}/{model}/{scenario}/{realization}/{variable}/"
-    )
+    prefix = f"{schema['prefix']}/{model}/{scenario}/{realization}/{variable}/"
 
     response = s3_client.list_objects_v2(Bucket=schema["bucket"], Prefix=prefix)
 
@@ -389,7 +379,7 @@ def download_granules(
     validate_inputs(schema, inputs)
 
     # The list will contain the s3 key, the basename, and the file size
-    # file size is used to prompt the user on how much data will be downloaded 
+    # file size is used to prompt the user on how much data will be downloaded
     files_to_download: list[tuple[str, str, int]] = []
     found_files: list[str] = []
     total_size = 0
@@ -417,7 +407,7 @@ def download_granules(
 
     if not files_to_download and existing_files_size == 0:
         print("No files found matching your criteria. Please check your parameters.")
-        return
+        return []
 
     if not skip_prompt and files_to_download:
         print(
@@ -427,7 +417,7 @@ def download_granules(
         confirmation = input("\nProceed with download? [y/N] ").lower()
         if confirmation != "y":
             print("Download canceled.")
-            return
+            return []
     elif files_to_download == []:
         print("\nAll files already exist locally. No downloads needed.")
         return found_files
