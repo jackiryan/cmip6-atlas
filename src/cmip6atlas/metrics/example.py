@@ -7,8 +7,8 @@ if __name__ == "__main__":
     start_year = 2021
     end_year = 2025
     scenario = "ssp585"
-    base_dir = "/Users/jryan/Documents/nex-gddp-data"
-    output_dir = "/Users/jryan/Documents/climate-metrics"
+    base_dir = "./nex-gddp-data"
+    output_dir = "./climate-metrics"
     calculate_multi_model_metric(
         metric_name,
         start_year,

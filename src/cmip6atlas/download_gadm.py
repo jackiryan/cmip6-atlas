@@ -7,7 +7,7 @@ import argparse
 import sys
 
 DEFAULT_CSV_FILENAME = "gadm_countries.csv"
-DEFAULT_DOWNLOAD_DIR = "gadm_data"
+DEFAULT_DOWNLOAD_DIR = "country-bounds"
 DEFAULT_REQUEST_DELAY = 0.5  # seconds
 DEFAULT_TIMEOUT = 60  # seconds for requests
 
