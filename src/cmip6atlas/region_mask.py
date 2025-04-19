@@ -1,11 +1,10 @@
 import geopandas as gpd
-import xarray as xr
-import regionmask
-import pandas as pd
-import numpy as np
 import os
-import warnings
+import pandas as pd
+import regionmask
 import traceback
+import warnings
+import xarray as xr
 
 
 def calculate_geojson_feature_means(
@@ -19,6 +18,9 @@ def calculate_geojson_feature_means(
     """
     Calculates the spatial mean of a NetCDF variable for each feature
     in a GeoJSON file, preserving other dimensions (like time, model).
+
+    Uses regionmask for mapping grid cells to features based on grid cell
+    centers falling within polygons.
 
     Writes a new GeoJSON file containing the original features and
     geometry, but with added properties representing the mean values
@@ -38,7 +40,7 @@ def calculate_geojson_feature_means(
         True if the process completed successfully and the file was written,
         False otherwise.
     """
-    print("--- Starting spatial averaging ---")
+    print("--- Starting spatial averaging using regionmask ---")
     print(f"Input GeoJSON: {geojson_path}")
     print(f"Input NetCDF: {netcdf_path}")
     print(f"Variable to average: {variable_name}")
@@ -100,7 +102,7 @@ def calculate_geojson_feature_means(
         data_var = ds[variable_name]
         print(f"Found variable '{variable_name}' with dimensions: {data_var.dims}")
 
-        # 3. Create region mask from GeoDataFrame
+        # 3. Create region mask object from GeoDataFrame
         print("Creating region mask object...")
         try:
             # Use the temporary column name containing index values for robust region numbering
@@ -112,38 +114,72 @@ def calculate_geojson_feature_means(
             # Catch errors specifically during regionmask object creation
             raise RuntimeError(f"Error creating regionmask Regions object: {e}") from e
 
-        # 4. Create mask array and calculate spatial mean per region
-        print("Preparing data and creating mask array...")
-        data_var_for_masking = data_var.copy()
+        # 4. Create mask array using regionmask and calculate spatial mean per region
+        print("Preparing data and creating mask array using regionmask...")
+        try:
+            # Prepare data variable (potentially renaming coords for regionmask standard inference)
+            data_var_for_masking = data_var.copy()
+            rename_dict = {}
+            if lon_name != "lon" and "lon" not in data_var_for_masking.coords:
+                if lon_name in data_var_for_masking.coords:
+                    rename_dict[lon_name] = "lon"
+                else:
+                    raise ValueError(f"Longitude coordinate '{lon_name}' missing.")
+            if lat_name != "lat" and "lat" not in data_var_for_masking.coords:
+                if lat_name in data_var_for_masking.coords:
+                    rename_dict[lat_name] = "lat"
+                else:
+                    raise ValueError(f"Latitude coordinate '{lat_name}' missing.")
 
-        # Temporarily rename coordinates if needed for regionmask's default inference ('lon', 'lat')
-        rename_dict = {}
-        if lon_name != "lon" and "lon" not in data_var_for_masking.coords:
-            if lon_name in data_var_for_masking.coords:
-                rename_dict[lon_name] = "lon"
-            else:
-                raise ValueError(f"Longitude coordinate '{lon_name}' missing.")
-        if lat_name != "lat" and "lat" not in data_var_for_masking.coords:
-            if lat_name in data_var_for_masking.coords:
-                rename_dict[lat_name] = "lat"
-            else:
-                raise ValueError(f"Latitude coordinate '{lat_name}' missing.")
+            if rename_dict:
+                print(
+                    f"Temporarily renaming coordinates {list(rename_dict.keys())} to {list(rename_dict.values())} for masking."
+                )
+                data_var_for_masking = data_var_for_masking.rename(rename_dict)
 
-        if rename_dict:
-            print(
-                f"Temporarily renaming coordinates {list(rename_dict.keys())} to {list(rename_dict.values())} for masking."
-            )
-            data_var_for_masking = data_var_for_masking.rename(rename_dict)
+            # Create the mask array using regionmask
+            mask = regions.mask(data_var_for_masking)
+            print("Created mask array using regionmask.")
 
-        # Create the mask array (grid cells contain region number or NaN)
-        mask = regions.mask(data_var_for_masking)
+            # --- Calculate spatial mean ---
+            print("Calculating spatial means using groupby...")
+            # Group original data by the mask and average over spatial dimensions
+            feature_means = data_var.groupby(mask).mean(skipna=True)
 
-        print("Calculating spatial means using groupby...")
-        # Group original data by the mask and average over spatial dimensions
-        feature_means = data_var.groupby(mask).mean(skipna=True)
-        print("Averaging complete.")
+            # Check if result is empty which might indicate issues despite no error
+            if feature_means.size == 0:
+                warnings.warn(
+                    "Groupby operation resulted in an empty DataArray. No means calculated."
+                )
 
-        # 5. Reshape results and join back to GeoDataFrame
+            print("Averaging complete.")
+
+        except ValueError as e:
+            # Catch the specific "all NaN" error from groupby or other masking errors
+            print(f"Error during mask creation or groupby averaging: {e}")
+            traceback.print_exc()  # Provide details for masking/groupby errors
+            if ds is not None:
+                ds.close()
+            if gdf is not None and temp_id_col in gdf.columns:
+                try:
+                    gdf.drop(columns=[temp_id_col], inplace=True)
+                except Exception:
+                    pass
+            return False
+        except Exception as e:
+            # Catch other potential errors during this step
+            print(f"Error during regionmask masking or groupby averaging: {e}")
+            traceback.print_exc()
+            if ds is not None:
+                ds.close()
+            if gdf is not None and temp_id_col in gdf.columns:
+                try:
+                    gdf.drop(columns=[temp_id_col], inplace=True)
+                except Exception:
+                    pass
+            return False
+
+        # 5. Reshape results and join back to GeoDataFrame (Optimized)
         print("Reshaping results and joining to GeoDataFrame...")
         output_gdf = gdf.copy()  # Start with the original gdf (contains temp_id_col)
 
@@ -224,11 +260,11 @@ def calculate_geojson_feature_means(
         return False
     except (ValueError, RuntimeError, KeyError) as e:  # Catch specific expected errors
         print(f"Error during processing: {e}")
-        # traceback.print_exc()
+        # traceback.print_exc() # Uncomment for detailed traceback during debugging
         return False
     except Exception as e:  # Catch unexpected errors
         print(f"An unexpected error occurred: {e}")
-        traceback.print_exc()
+        traceback.print_exc()  # Print full traceback for unexpected errors
         return False
     finally:
         # Ensure the NetCDF dataset is always closed if it was opened
@@ -243,13 +279,16 @@ def calculate_geojson_feature_means(
                 pass  # Ignore cleanup errors
 
 
-# --- Example Usage (if run directly or called from another script) ---
 if __name__ == "__main__":
     # dummy test data
-    input_geojson = "country-bounds/gadm41_CAN_2.json"
-    input_netcdf = "climate-metrics/ndays_gt_35c_multi_model_ssp585_2021-2025.nc"
-    output_geojson = "climate-metrics/ndays_gt_35c_CAN_2_ssp585_2021-2025.geojson"
+    country = "PRT"
+    level = 1
     var_name = "ndays_gt_35c"
+    input_geojson = (
+        f"/Users/jryan/Documents/country-bounds/gadm41_{country}_{level}.json"
+    )
+    input_netcdf = f"/Users/jryan/Documents/climate-metrics/{var_name}_multi_model_ssp585_2021-2025.nc"
+    output_geojson = f"/Users/jryan/Documents/climate-metrics/B_{var_name}_{country}_{level}_ssp585_2021-2025.geojson"
 
     # Create dummy output dir
     os.makedirs(os.path.dirname(output_geojson), exist_ok=True)
