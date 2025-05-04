@@ -1,14 +1,77 @@
-import geopandas as gpd
+import geopandas as gpd  # type: ignore [import-untyped]
 import os
 import numpy as np
 import pandas as pd
-from rasterio.features import rasterize
-from rasterio.transform import Affine
+from rasterio.features import rasterize  # type: ignore [import-untyped]
+from rasterio.transform import Affine  # type: ignore [import-untyped]
 import shapely.ops
 import warnings
 import xarray as xr
 import concurrent.futures
 from typing import Any
+
+
+def apply_model_weights(
+    data_var: xr.DataArray, model_weights: dict[str, float]
+) -> xr.DataArray:
+    """
+    Apply weights to average across climate models.
+
+    Args:
+        data_var: xarray DataArray with a 'model' dimension
+        model_weights: Dictionary mapping model names to weights
+
+    Returns:
+        xarray DataArray with model dimension reduced via weighted average
+    """
+    if not model_weights:
+        # If no weights provided, return original data
+        return data_var
+
+    # Verify models in weights exist in the data
+    available_models = data_var.model.values
+    weights_dict = {
+        model: weight
+        for model, weight in model_weights.items()
+        if model in available_models
+    }
+
+    if not weights_dict:
+        warnings.warn(
+            "None of the provided model weights match available models. "
+            f"Available models: {list(available_models)}"
+        )
+        return data_var
+
+    # Check for models in data that aren't in weights and warn
+    missing_models = set(available_models) - set(weights_dict.keys())
+    if missing_models:
+        warnings.warn(
+            f"The following models don't have weights and will be excluded: {missing_models}"
+        )
+
+    # Create weights array matching the model dimension
+    weights_arr = xr.DataArray(
+        [weights_dict.get(model, 0) for model in available_models],
+        coords={"model": available_models},
+        dims=["model"],
+    )
+
+    # Normalize weights to sum to 1 (only for models with weights)
+    weights_sum = weights_arr.sum()
+    if weights_sum > 0:
+        weights_arr = weights_arr / weights_sum
+    else:
+        warnings.warn("All model weights are zero. Using unweighted average.")
+        return data_var.mean(dim="model")
+
+    # Filter out models with zero weight
+    masked_data = data_var.where(weights_arr > 0)
+
+    # Perform weighted average along model dimension
+    weighted_avg = (masked_data * weights_arr).sum(dim="model", skipna=True)
+
+    return weighted_avg
 
 
 def calculate_geojson_feature_means(
@@ -19,6 +82,7 @@ def calculate_geojson_feature_means(
     lat_name: str = "lat",
     lon_name: str = "lon",
     use_all_touched: bool = True,
+    model_weights: dict[str, float] = {},
     max_workers: int = 4,  # Number of parallel workers
 ) -> bool:
     """
@@ -36,6 +100,7 @@ def calculate_geojson_feature_means(
         lat_name: Name of the latitude coordinate variable in the NetCDF file.
         lon_name: Name of the longitude coordinate variable in the NetCDF file.
         use_all_touched: Whether grid cells touching a feature are included in its mask.
+        model_weights: Optionally provide weights to pre-compute average value across models.
         max_workers: Maximum number of parallel processes to use.
 
     Returns:
@@ -70,6 +135,13 @@ def calculate_geojson_feature_means(
 
         data_var = ds[variable_name]
         print(f"Processing '{variable_name}' with dimensions: {data_var.dims}")
+
+        # Apply model weights if provided
+        if "model" in data_var.dims and model_weights:
+            print(f"Applying weights to {len(model_weights)} models")
+            data_var = apply_model_weights(data_var, model_weights)
+            print(data_var)
+            print(f"After applying weights, dimensions: {data_var.dims}")
 
         # 3. Setup for multi-region grid cell contribution
         # Get coordinate info
@@ -139,6 +211,8 @@ def calculate_geojson_feature_means(
                 )
 
                 # Calculate means specifically for this region
+                # TO DO: consider using a weighted mean to account for pixels whose
+                # centers are outside the region. SDF maybe?
                 masked_data = data_var.where(region_mask == 1)
                 region_mean = masked_data.mean(dim=[lat_name, lon_name], skipna=True)
 
@@ -150,6 +224,7 @@ def calculate_geojson_feature_means(
 
                 # Handle multi-level index case (common with multiple dimensions)
                 if isinstance(df.index, pd.MultiIndex):
+                    print("multi-index")
                     for idx, row in df.iterrows():
                         # Create clean column names from multi-index
                         column_parts = [f"avg_{variable_name}"]
@@ -160,9 +235,11 @@ def calculate_geojson_feature_means(
                         # Use iloc to access by position (fix for the warning)
                         region_data[column_name] = row.iloc[0]
                 else:
-                    # Handle flat index case (e.g., only one value per region)
-                    column_name = df.columns[0]  # Usually just 'avg_{variable_name}'
-                    region_data[column_name] = df.iloc[0, 0]
+                    print("single index")
+                    for idx, row in df.iterrows():
+                        # Usually just 'avg_{variable_name}_{year}'
+                        column_name = f"{df.columns[0]}_{idx}"
+                        region_data[column_name] = row.iloc[0]
 
                 return region_id, region_data
 
@@ -223,7 +300,6 @@ def calculate_geojson_feature_means(
 
 
 if __name__ == "__main__":
-    # dummy test data
     country = "PRT"
     level = 1
     var_name = "ndays_gt_35c"
@@ -232,6 +308,28 @@ if __name__ == "__main__":
     output_geojson = (
         f"climate-metrics/{var_name}_{country}_{level}_ssp585_2021-2025.geojson"
     )
+
+    # Derived from Massoud et al, 2023 (https://doi.org/10.1038/s43247-023-01009-8)
+    # This is not necessarily valid for this downscaled dataset, but is okay for a
+    # first pass at an ensemble mean
+    weights = {
+        "ACCESS-CM2": 0.0412,
+        "ACCESS-ESM1-5": 0.0581,
+        "BCC-CSM2-MR": 0.0723,
+        "CanESM5": 0.029,
+        "EC-Earth3": 0.0498,
+        "FGOALS-g3": 0.0716,
+        "GFDL-ESM4": 0.0589,
+        "INM-CM4-8": 0.0646,
+        "INM-CM5-0": 0.0649,
+        "IPSL-CM6A-LR": 0.0449,
+        "MIROC6": 0.0767,
+        "MPI-ESM1-2-HR": 0.0731,
+        "MPI-ESM1-2-LR": 0.0755,
+        "MRI-ESM2-0": 0.073,
+        "NorESM2-LM": 0.0736,
+        "NorESM2-MM": 0.0727,
+    }
 
     # Create dummy output dir
     os.makedirs(os.path.dirname(output_geojson), exist_ok=True)
@@ -249,6 +347,7 @@ if __name__ == "__main__":
             variable_name=var_name,
             output_geojson_path=output_geojson,
             use_all_touched=True,
+            model_weights=weights,
         )
 
         if success:
