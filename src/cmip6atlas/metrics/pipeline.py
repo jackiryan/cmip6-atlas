@@ -139,6 +139,7 @@ def calculate_multi_model_metric(
     start_year: int,
     end_year: int,
     scenario: str,
+    models: list[str] | None = None,
     exclude_models: list[str] | None = None,
     base_dir: str = "./nex-gddp-data",
     output_dir: str = "./climate-metrics",
@@ -151,6 +152,7 @@ def calculate_multi_model_metric(
         start_year (int): Start year of the period
         end_year (int): End year of the period
         scenario (str): Climate scenario
+        models (list[str] | None): Specific models to process (if None, uses all available)
         exclude_models (list[str] | None): Models to exclude from processing
         base_dir (str): Directory for raw data
         output_dir (str): Directory for output metrics
@@ -161,21 +163,24 @@ def calculate_multi_model_metric(
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
 
-    # Get list of available models from NEX-GDDP-CMIP6
-    s3_client = create_s3_client()
+    # Determine which models to process
+    if models is not None:
+        # Use the provided list of models
+        models_to_process = models.copy()
+    else:
+        # Get list of available models from NEX-GDDP-CMIP6
+        s3_client = create_s3_client()
 
-    # Determine the available models for this dataset schema
-    bucket = str(GDDP_CMIP6_SCHEMA["bucket"])
-    prefix_str = str(GDDP_CMIP6_SCHEMA["prefix"])
-    if not prefix_str.endswith("/"):
-        prefix_str += "/"
-    available_models = get_available_models(s3_client, bucket, prefix_str)
+        # Determine the available models for this dataset schema
+        bucket = str(GDDP_CMIP6_SCHEMA["bucket"])
+        prefix_str = str(GDDP_CMIP6_SCHEMA["prefix"])
+        if not prefix_str.endswith("/"):
+            prefix_str += "/"
+        models_to_process = get_available_models(s3_client, bucket, prefix_str)
 
     # Filter out excluded models
     if exclude_models:
-        models_to_process = [m for m in available_models if m not in exclude_models]
-    else:
-        models_to_process = available_models
+        models_to_process = [m for m in models_to_process if m not in exclude_models]
 
     print(f"Processing {len(models_to_process)} models: {', '.join(models_to_process)}")
 
