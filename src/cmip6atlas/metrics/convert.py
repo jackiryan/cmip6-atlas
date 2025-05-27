@@ -1,6 +1,6 @@
 import xarray as xr
-import rasterio
-from rasterio.transform import from_bounds
+import rasterio  # type: ignore [import-untyped]
+from rasterio.transform import from_bounds  # type: ignore [import-untyped]
 import numpy as np
 
 

@@ -34,7 +34,6 @@ Output: NetCDF file with mean of model outputs and cross-model standard deviatio
 """
 
 import calendar
-from cftime import Datetime360Day, DatetimeNoLeap
 from datetime import datetime
 import glob
 import numpy as np

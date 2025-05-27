@@ -1,6 +1,6 @@
 import xarray as xr
 import numpy as np
-from typing import Any, cast
+from typing import cast
 
 from cmip6atlas.metrics.definitions import SeasonDefinition
 from cmip6atlas.metrics.units import process_variable

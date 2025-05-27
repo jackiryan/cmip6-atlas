@@ -1,6 +1,6 @@
 # units.py
 import xarray as xr
-from typing import Callable, Any
+from typing import Callable
 
 
 def process_temperature(ds: xr.Dataset, variable: str, **kwargs) -> xr.Dataset:
