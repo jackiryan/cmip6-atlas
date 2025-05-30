@@ -1,9 +1,105 @@
 import xarray as xr
 import numpy as np
 from typing import cast
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
+import multiprocessing as mp
 
 from cmip6atlas.metrics.definitions import SeasonDefinition
 from cmip6atlas.metrics.units import process_variable
+
+
+def _process_single_year_temp(
+    fname: str, variable: str, season: SeasonDefinition
+) -> tuple[int, xr.DataArray]:
+    """Process a single year's temperature data for mean temperature calculation."""
+    with xr.open_dataset(fname) as ds:
+        year: int = ds.time.dt.year.values[0].item()
+        season_ds = extract_seasonal_data(ds, variable, season, year)
+        season_ds_c = process_variable(season_ds, variable)
+        season_mean = season_ds_c[variable].mean(dim=["time"])
+        return year, season_mean
+
+
+def _process_single_year_precip(
+    fname: str, variable: str, season: SeasonDefinition, max_flux: float
+) -> tuple[int, xr.DataArray]:
+    """Process a single year's precipitation data for total precipitation calculation."""
+    with xr.open_dataset(fname) as ds:
+        year: int = ds.time.dt.year.values[0].item()
+
+        # Apply precipitation cap
+        capped_ds = ds.copy()
+        capped_ds[variable] = ds[variable].clip(max=max_flux)
+
+        season_ds = extract_seasonal_data(capped_ds, variable, season, year)
+        season_ds_mm = process_variable(season_ds, variable)
+
+        season_sums = season_ds_mm[variable].sum(dim="time", skipna=True)
+        ocean_mask = season_ds_mm[variable].isnull().all(dim="time")
+        season_total = season_sums.where(~ocean_mask, np.nan)
+
+        return year, season_total
+
+
+def _process_single_year_threshold(
+    fname: str, variable: str, threshold: float, operation: str
+) -> tuple[int, xr.DataArray]:
+    """Process a single year's data for threshold days calculation."""
+    with xr.open_dataset(fname) as ds:
+        year: int = ds.time.dt.year.values[0].item()
+        ds_c = process_variable(ds, variable)
+
+        # Apply threshold operation
+        if operation == "gt":
+            threshold_met = ds_c[variable] > threshold
+        elif operation == "lt":
+            threshold_met = ds_c[variable] < threshold
+        elif operation == "ge":
+            threshold_met = ds_c[variable] >= threshold
+        elif operation == "le":
+            threshold_met = ds_c[variable] <= threshold
+        else:
+            raise ValueError(f"Unsupported operation: {operation}")
+
+        days_count = threshold_met.sum(dim="time", skipna=True)
+        ocean_mask = ds_c[variable].isnull().all(dim="time")
+        days_total = days_count.where(~ocean_mask, np.nan)
+
+        return year, days_total
+
+
+def _process_single_year_growing_season(
+    fname: str, variable: str, base_temp: float, min_length: int
+) -> tuple[int, xr.DataArray]:
+    """Process a single year's data for growing season length calculation."""
+    with xr.open_dataset(fname) as ds:
+        year: int = ds.time.dt.year.values[0].item()
+        ds_c = process_variable(ds, variable)
+
+        above_base = ds_c[variable] > base_temp
+        growing_season_length = xr.zeros_like(ds_c[variable].isel(time=0))
+
+        # Process each lat/lon grid cell
+        for lat_idx in range(len(ds_c.lat)):
+            for lon_idx in range(len(ds_c.lon)):
+                cell_series = above_base.isel(lat=lat_idx, lon=lon_idx).values
+
+                # Find runs of consecutive days
+                runs = np.diff(np.hstack(([0], cell_series, [0])))
+                run_starts = np.where(runs == 1)[0]
+                run_ends = np.where(runs == -1)[0]
+                run_lengths = run_ends - run_starts
+
+                valid_runs = run_lengths[run_lengths >= min_length]
+
+                if len(valid_runs) > 0:
+                    growing_season_length[lat_idx, lon_idx] = sum(valid_runs)
+
+        ocean_mask = ds_c[variable].isnull().all(dim="time")
+        season_total = growing_season_length.where(~ocean_mask, np.nan)
+
+        return year, season_total
 
 
 def extract_seasonal_data(
@@ -143,10 +239,11 @@ def extract_seasonal_data(
 
 
 def calculate_mean_temp(
-    datasets: dict[str, list[xr.Dataset]], season: SeasonDefinition, **kwargs
+    datasets: dict[str, list[str]], season: SeasonDefinition, **kwargs
 ) -> xr.Dataset:
     """
     Calculate seasonal temperature normal, considering hemisphere differences.
+    Uses parallel processing to safely handle NetCDF-4 files.
 
     Args:
         datasets: Dictionary mapping variables to lists of annual dataset filenames
@@ -160,27 +257,35 @@ def calculate_mean_temp(
     metric_name = f"mean_{season.name}_temp"
     temp_datasets = datasets[variable]
 
-    # Extract the seasonal data for each year
-    seasonal_data: list[xr.DataArray] = []
-    years: list[int] = []
-    for fname in temp_datasets:
-        ds = xr.open_dataset(fname)
+    # Use parallel processing to handle each year
+    max_workers = min(len(temp_datasets), mp.cpu_count())
 
-        # Get the year from dataset
-        year: int = ds.time.dt.year.values[0].item()
-        years.append(year)
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_fname = {
+            executor.submit(_process_single_year_temp, fname, variable, season): fname
+            for fname in temp_datasets
+        }
 
-        # Extract seasonal data -- this extracts all data if the season is annual
-        season_ds = extract_seasonal_data(ds, variable, season, year)
+        # Collect results
+        seasonal_data: list[xr.DataArray] = []
+        years: list[int] = []
 
-        # Convert K to degC
-        season_ds_c = process_variable(season_ds, variable)
+        for future in as_completed(future_to_fname):
+            try:
+                year, season_mean = future.result()
+                years.append(year)
+                seasonal_data.append(season_mean)
+            except Exception as exc:
+                fname = future_to_fname[future]
+                print(f"File {fname} generated an exception: {exc}")
+                raise
 
-        # Calculate the temporal mean for each grid cell
-        season_mean = season_ds_c[variable].mean(dim=["time"])
-
-        seasonal_data.append(season_mean)
-        ds.close()
+    # Sort by year to maintain consistent ordering
+    sorted_pairs = sorted(zip(years, seasonal_data), key=lambda x: x[0])
+    sorted_years, sorted_data = zip(*sorted_pairs)
+    years = list(sorted_years)
+    seasonal_data = list(sorted_data)
 
     # Create result dataset
     result = xr.Dataset()
@@ -213,6 +318,7 @@ def calculate_total_precip(
 ) -> xr.Dataset:
     """
     Calculate seasonal precipitation total, considering hemisphere differences.
+    Uses parallel processing to safely handle NetCDF-4 files.
 
     Args:
         datasets: Dictionary mapping variables to lists of annual dataset filenames
@@ -230,35 +336,41 @@ def calculate_total_precip(
     max_physical_precip_flux = 0.007  # kg m^-2 s^-1
     precip_datasets = datasets[variable]
 
-    # Extract the seasonal data for each year
-    seasonal_data: list[xr.DataArray] = []
-    years: list[int] = []
-    for fname in precip_datasets:
-        ds = xr.open_dataset(fname)
+    # Use parallel processing to handle each year
+    max_workers = min(len(precip_datasets), mp.cpu_count())
 
-        # Get the year from dataset
-        year: int = ds.time.dt.year.values[0].item()
-        years.append(year)
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_fname = {
+            executor.submit(
+                _process_single_year_precip,
+                fname,
+                variable,
+                season,
+                max_physical_precip_flux,
+            ): fname
+            for fname in precip_datasets
+        }
 
-        # Apply a heuristic cap to the raw precipitation data
-        # This caps any values exceeding the threshold
-        capped_ds = ds.copy()
-        capped_ds[variable] = ds[variable].clip(max=max_physical_precip_flux)
+        # Collect results
+        seasonal_data: list[xr.DataArray] = []
+        years: list[int] = []
 
-        # Extract seasonal data -- this extracts all data if the season is annual
-        season_ds = extract_seasonal_data(capped_ds, variable, season, year)
+        for future in as_completed(future_to_fname):
+            try:
+                year, season_total = future.result()
+                years.append(year)
+                seasonal_data.append(season_total)
+            except Exception as exc:
+                fname = future_to_fname[future]
+                print(f"File {fname} generated an exception: {exc}")
+                raise
 
-        # Convert from kg/m²/s to mm/day
-        season_ds_mm = process_variable(season_ds, variable)
-
-        # Summing over time creates 0 values where there were nodata values, so
-        # we need to re-mask them
-        season_sums = season_ds_mm[variable].sum(dim="time", skipna=True)
-        ocean_mask = season_ds_mm[variable].isnull().all(dim="time")
-        season_total = season_sums.where(~ocean_mask, np.nan)
-
-        seasonal_data.append(season_total)
-        ds.close()
+    # Sort by year to maintain consistent ordering
+    sorted_pairs = sorted(zip(years, seasonal_data), key=lambda x: x[0])
+    sorted_years, sorted_data = zip(*sorted_pairs)
+    years = list(sorted_years)
+    seasonal_data = list(sorted_data)
 
     # Create result dataset
     result = xr.Dataset()
@@ -294,6 +406,7 @@ def calculate_threshold_days(
 ) -> xr.Dataset:
     """
     Calculate the average number of days per year that meet a threshold condition.
+    Uses parallel processing to safely handle NetCDF-4 files.
 
     Args:
         datasets: Dictionary mapping variables to lists of annual dataset filenames
@@ -313,37 +426,37 @@ def calculate_threshold_days(
     variable_datasets = datasets[variable]
     metric_name = f"ndays_{operation}_{int(threshold)}c"
 
-    # Calculate threshold days for each year
-    annual_threshold_days: list[xr.DataArray] = []
-    years: list[int] = []
-    for fname in variable_datasets:
-        ds = xr.open_dataset(fname)
+    # Use parallel processing to handle each year
+    max_workers = min(len(variable_datasets), mp.cpu_count())
 
-        # Get the year from dataset
-        year: int = ds.time.dt.year.values[0].item()
-        years.append(year)
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_fname = {
+            executor.submit(
+                _process_single_year_threshold, fname, variable, threshold, operation
+            ): fname
+            for fname in variable_datasets
+        }
 
-        # Convert K to degC
-        ds_c = process_variable(ds, variable)
+        # Collect results
+        annual_threshold_days: list[xr.DataArray] = []
+        years: list[int] = []
 
-        # Apply threshold operation
-        if operation == "gt":
-            threshold_met = ds_c[variable] > threshold
-        elif operation == "lt":
-            threshold_met = ds_c[variable] < threshold
-        elif operation == "ge":
-            threshold_met = ds_c[variable] >= threshold
-        elif operation == "le":
-            threshold_met = ds_c[variable] <= threshold
-        else:
-            raise ValueError(f"Unsupported operation: {operation}")
+        for future in as_completed(future_to_fname):
+            try:
+                year, days_total = future.result()
+                years.append(year)
+                annual_threshold_days.append(days_total)
+            except Exception as exc:
+                fname = future_to_fname[future]
+                print(f"File {fname} generated an exception: {exc}")
+                raise
 
-        # Sum days where threshold is met for each grid cell
-        days_count = threshold_met.sum(dim="time", skipna=True)
-        ocean_mask = ds_c[variable].isnull().all(dim="time")
-        days_total = days_count.where(~ocean_mask, np.nan)
-        annual_threshold_days.append(days_total)
-        ds.close()
+    # Sort by year to maintain consistent ordering
+    sorted_pairs = sorted(zip(years, annual_threshold_days), key=lambda x: x[0])
+    sorted_years, sorted_data = zip(*sorted_pairs)
+    years = list(sorted_years)
+    annual_threshold_days = list(sorted_data)
 
     # Create result dataset
     result = xr.Dataset()
@@ -373,13 +486,14 @@ def calculate_threshold_days(
 
 
 def calculate_growing_season_length(
-    datasets: dict[str, list[xr.Dataset]],
+    datasets: dict[str, list[str]],
     base_temp: float = 5.0,
     min_length: int = 5,  # Minimum consecutive days to count as growing season
     **kwargs,
 ) -> xr.Dataset:
     """
     Calculate average growing season length (consecutive days above base temperature).
+    Uses parallel processing to safely handle NetCDF-4 files.
 
     Args:
         datasets: Dictionary mapping variables to lists of annual dataset filenames
@@ -394,63 +508,41 @@ def calculate_growing_season_length(
     metric_name = "growing_season_length"
     temp_datasets = datasets[variable]
 
-    # Calculate growing season length for each year
-    annual_growing_seasons: list[xr.DataArray] = []
-    years: list[int] = []
-    for fname in temp_datasets:
-        ds = xr.open_dataset(fname)
+    # Use parallel processing to handle each year
+    max_workers = min(len(temp_datasets), mp.cpu_count())
 
-        # Get the year from dataset
-        year: int = ds.time.dt.year.values[0].item()
-        years.append(year)
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_fname = {
+            executor.submit(
+                _process_single_year_growing_season,
+                fname,
+                variable,
+                base_temp,
+                min_length,
+            ): fname
+            for fname in temp_datasets
+        }
 
-        # Convert K to degC
-        ds_c = process_variable(ds, variable)
+        # Collect results
+        annual_growing_seasons: list[xr.DataArray] = []
+        years: list[int] = []
 
-        # Get daily temperatures above base temperature
-        above_base = ds_c[variable] > base_temp
+        for future in as_completed(future_to_fname):
+            try:
+                year, season_total = future.result()
+                years.append(year)
+                annual_growing_seasons.append(season_total)
+            except Exception as exc:
+                fname = future_to_fname[future]
+                print(f"File {fname} generated an exception: {exc}")
+                raise
 
-        # Use a rolling window to find consecutive days
-        # This is a simplified approach - for each grid cell separately
-        growing_season_length = xr.zeros_like(ds_c[variable].isel(time=0))
-
-        # Process each lat/lon grid cell
-        for lat_idx in range(len(ds_c.lat)):
-            for lon_idx in range(len(ds_c.lon)):
-                # Get the time series for this grid cell
-                cell_series = above_base.isel(lat=lat_idx, lon=lon_idx).values
-
-                # Find runs of consecutive days
-                # 1. Identify where values change
-                runs = np.diff(np.hstack(([0], cell_series, [0])))
-                # 2. Start indices of runs
-                run_starts = np.where(runs == 1)[0]
-                # 3. End indices of runs
-                run_ends = np.where(runs == -1)[0]
-                # 4. Lengths of runs
-                run_lengths = run_ends - run_starts
-
-                # Filter for runs that meet minimum length
-                valid_runs = run_lengths[run_lengths >= min_length]
-
-                # For growing season length, sum the lengths of all valid runs
-                if len(valid_runs) > 0:
-                    # If hemisphere-specific logic is needed, check latitude
-                    # In NH: just sum all growing periods
-                    # In SH: handle potential split across year boundary
-                    lat_value = float(ds.lat.isel(lat=lat_idx).values)
-
-                    if lat_value >= 0:  # Northern Hemisphere
-                        growing_season_length[lat_idx, lon_idx] = sum(valid_runs)
-                    else:  # Southern Hemisphere
-                        # For SH, we might need special handling if the growing season
-                        # spans the year boundary
-                        growing_season_length[lat_idx, lon_idx] = sum(valid_runs)
-
-        ocean_mask = ds_c[variable].isnull().all(dim="time")
-        season_total = growing_season_length.where(~ocean_mask, np.nan)
-        annual_growing_seasons.append(season_total)
-        ds.close()
+    # Sort by year to maintain consistent ordering
+    sorted_pairs = sorted(zip(years, annual_growing_seasons), key=lambda x: x[0])
+    sorted_years, sorted_data = zip(*sorted_pairs)
+    years = list(sorted_years)
+    annual_growing_seasons = list(sorted_data)
 
     # Create result dataset
     result = xr.Dataset()

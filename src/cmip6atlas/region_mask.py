@@ -105,7 +105,7 @@ def calculate_geojson_feature_means(
     lon_name: str = "lon",
     use_all_touched: bool = True,
     model_weights: dict[str, float] = {},
-    max_workers: int = 4,  # Number of parallel workers
+    max_workers: int = 12,
 ) -> bool:
     """
     Calculates the spatial mean of a NetCDF variable for each feature
@@ -210,7 +210,7 @@ def calculate_geojson_feature_means(
             try:
                 # Create a mask for just this one region
                 region_mask_array = rasterize(
-                    shapes=[(geometry, 1)],  # Just one shape with value 1
+                    shapes=[(geometry, 1)],  # One region = one shape
                     out_shape=out_shape,
                     transform=transform,
                     fill=np.nan,
@@ -239,7 +239,7 @@ def calculate_geojson_feature_means(
                 region_mean = masked_data.mean(dim=[lat_name, lon_name], skipna=True)
 
                 # Convert xarray result to pandas DataFrame with proper column names
-                df = region_mean.to_dataframe(name=f"avg_{variable_name}")
+                df = region_mean.to_dataframe(name=variable_name)
 
                 # Process the DataFrame into a dictionary
                 region_data = {}
@@ -249,7 +249,7 @@ def calculate_geojson_feature_means(
                     print("multi-index")
                     for idx, row in df.iterrows():
                         # Create clean column names from multi-index
-                        column_parts = [f"avg_{variable_name}"]
+                        column_parts = [variable_name]
                         for dim_name, dim_val in zip(
                             df.index.names, idx if isinstance(idx, tuple) else (idx,)
                         ):
@@ -260,7 +260,7 @@ def calculate_geojson_feature_means(
                         region_data[column_name] = row.iloc[0]
                 else:
                     for idx, row in df.iterrows():
-                        # Usually just 'avg_{variable_name}_{year}'
+                        # Usually just '{variable_name}_{year}'
                         column_name = f"{df.columns[0]}_{idx}"
                         region_data[column_name] = row.iloc[0]
 
