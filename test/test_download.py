@@ -17,9 +17,7 @@ from cmip6atlas.download import (
     DownloadError,
 )
 
-from cmip6atlas.schema import (
-    GDDP_CMIP6_SCHEMA
-)
+from cmip6atlas.schema import GDDP_CMIP6_SCHEMA
 
 
 class TestCreateS3Client:
@@ -83,9 +81,9 @@ class TestGetAvailableRealizations:
         # Should return the second realization when sorted (r2i1p1f1)
         assert realization == "r2i1p1f1"
         mock_client.list_objects_v2.assert_called_once_with(
-            Bucket="test-bucket", 
-            Prefix="NEX-GDDP-CMIP6/ACCESS-CM2/ssp585/", 
-            Delimiter="/"
+            Bucket="test-bucket",
+            Prefix="NEX-GDDP-CMIP6/ACCESS-CM2/ssp585/",
+            Delimiter="/",
         )
 
     def test_get_available_realizations_single(self):
@@ -106,11 +104,9 @@ class TestGetAvailableRealizations:
     def test_get_available_realizations_empty(self):
         """Test retrieval when no realizations are found."""
         mock_client = MagicMock()
-        mock_client.list_objects_v2.return_value = {
-            "CommonPrefixes": []
-        }
+        mock_client.list_objects_v2.return_value = {"CommonPrefixes": []}
 
-        # When no realizations are found, an empty list is sorted, 
+        # When no realizations are found, an empty list is sorted,
         # which should raise an IndexError
         with pytest.raises(IndexError):
             get_available_realizations(
@@ -195,7 +191,9 @@ class TestGetAvailableFiles:
 
     def test_get_available_files_cross_historical(self):
         """Test retrieval of files spanning historical and projected periods."""
-        with patch("cmip6atlas.download.get_available_realizations", return_value="r1i1p1f1"):
+        with patch(
+            "cmip6atlas.download.get_available_realizations", return_value="r1i1p1f1"
+        ):
             mock_client = MagicMock()
 
             # First call for historical data
@@ -226,10 +224,10 @@ class TestGetAvailableFiles:
                     ]
                 },
             ]
-    
+
             schema = GDDP_CMIP6_SCHEMA.copy()
             schema["historical_end_year"] = 2014  # Ensure this is set correctly
-            
+
             files = get_available_files(
                 mock_client, schema, "ACCESS-CM2", "ssp585", "tas", 2013, 2016
             )

@@ -2,7 +2,7 @@ import cdsapi
 import numpy as np
 import xarray as xr
 
-'''
+"""
 # Initialize the CDS API client
 c = cdsapi.Client()
 
@@ -19,33 +19,39 @@ response = c.retrieve(
     },
     'era5_monthly_2m_temp_1991_2020.nc'
 )
-'''
+"""
 
 # Step 2: Calculate the monthly normals
-ds = xr.open_dataset('era5_monthly_2m_temp_1991_2020.nc')
+ds = xr.open_dataset("era5_monthly_2m_temp_1991_2020.nc")
 
 # Extract month information from valid_time
-if 'valid_time' in ds.dims or 'valid_time' in ds.coords:
+if "valid_time" in ds.dims or "valid_time" in ds.coords:
     # Add a month coordinate based on valid_time
     ds = ds.assign_coords(month=ds.valid_time.dt.month)
-    
+
     # Group by the new month coordinate and calculate the mean
-    monthly_normals = ds.groupby('month').mean()
+    monthly_normals = ds.groupby("month").mean()
 else:
     # Fallback to original approach if structure is different
     print("Warning: 'valid_time' not found, attempting alternative grouping")
-    if 'time' in ds.dims or 'time' in ds.coords:
-        monthly_normals = ds.groupby('time.month').mean()
+    if "time" in ds.dims or "time" in ds.coords:
+        monthly_normals = ds.groupby("time.month").mean()
     else:
         raise ValueError("Neither 'valid_time' nor 'time' found in dataset")
 
 # Identify the temperature variable (could be 't2m' or other names)
-temp_vars = [var for var in ds.data_vars if '2m' in var and 'temp' in var.lower()]
-if not temp_vars and 't2m' in ds:
-    temp_vars = ['t2m']  # Common ERA5 variable name
+temp_vars = [
+    var for var in ds.data_vars if "2m" in str(var) and "temp" in str(var).lower()
+]
+if not temp_vars and "t2m" in ds:
+    temp_vars = ["t2m"]  # Common ERA5 variable name
 if not temp_vars:
     # Try to find any temperature-like variable
-    temp_vars = [var for var in ds.data_vars if any(term in var.lower() for term in ['temp', 't2m', '2m'])]
+    temp_vars = [
+        var
+        for var in ds.data_vars
+        if any(term in str(var).lower() for term in ["temp", "t2m", "2m"])
+    ]
 
 if not temp_vars:
     raise ValueError("Could not identify temperature variable in dataset")
@@ -55,9 +61,9 @@ print(f"Using temperature variable: {temp_var}")
 
 # Convert from Kelvin to Celsius
 monthly_normals[temp_var] = monthly_normals[temp_var] - 273.15
-monthly_normals[temp_var].attrs['units'] = 'degrees_C'
+monthly_normals[temp_var].attrs["units"] = "degrees_C"
 
 # Save the normals to a new NetCDF file
-monthly_normals.to_netcdf('era5_monthly_2m_temp_normals_1991_2020.nc')
+monthly_normals.to_netcdf("era5_monthly_2m_temp_normals_1991_2020.nc")
 
 print("Monthly temperature normals calculation complete!")

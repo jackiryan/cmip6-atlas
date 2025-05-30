@@ -23,6 +23,10 @@ SOFTWARE.
 import dask
 import dask.delayed
 from dask.distributed import Client
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dask.delayed import Delayed
 
 from cmip6atlas.cli import get_parser
 from cmip6atlas.download import download_granules
@@ -55,7 +59,7 @@ def process_window(
         )
         ensemble_process(input_dir, output_dir, variable, scenario, year)
 
-    tasks: list[dask.delayed.Delayed] = []
+    tasks: list["Delayed"] = []
     for year in range(start_year, end_year + 1):
         task = dask.delayed(year_task)(year)
         tasks.append(task)

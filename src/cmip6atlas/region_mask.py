@@ -250,7 +250,9 @@ def calculate_geojson_feature_means(
                     for idx, row in df.iterrows():
                         # Create clean column names from multi-index
                         column_parts = [f"avg_{variable_name}"]
-                        for dim_name, dim_val in zip(df.index.names, idx):
+                        for dim_name, dim_val in zip(
+                            df.index.names, idx if isinstance(idx, tuple) else (idx,)
+                        ):
                             column_parts.append(f"{dim_name}_{dim_val}")
                         column_name = "_".join(column_parts)
 
