@@ -48,6 +48,7 @@ download_cmip6_granules = "cmip6atlas.download:cli"
 create_ensemble_mean = "cmip6atlas.ensemble:cli"
 create_windowed_average = "cmip6atlas.window:cli"
 calculate_metrics_time_series = "cmip6atlas.metrics_time_series:cli"
+create_global_regions = "cmip6atlas.create_global_regions:cli"
 
 [tool.flit.module]
 name = "cmip6atlas"
