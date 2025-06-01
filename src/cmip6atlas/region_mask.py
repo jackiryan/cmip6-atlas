@@ -108,37 +108,88 @@ def calculate_geojson_feature_means(
     max_workers: int = 12,
 ) -> bool:
     """
-    Calculates the spatial mean of a NetCDF variable for each feature
-    in a GeoJSON file, preserving other dimensions (like time, model).
+    Legacy wrapper function for backward compatibility.
+
+    This function maintains the original interface but now uses the global_regions.geojson
+    file internally. The geojson_path parameter is ignored.
+    """
+    warnings.warn(
+        "calculate_geojson_feature_means is deprecated. Use calculate_global_regions_means instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    # Convert geojson output path to json output path
+    json_output_path = output_geojson_path.replace(".geojson", ".json")
+
+    return calculate_global_regions_means(
+        global_regions_path="global_regions.geojson",
+        netcdf_path=netcdf_path,
+        variable_name=variable_name,
+        output_json_path=json_output_path,
+        lat_name=lat_name,
+        lon_name=lon_name,
+        use_all_touched=use_all_touched,
+        model_weights=model_weights,
+        max_workers=max_workers,
+        country=None,
+    )
+
+
+def calculate_global_regions_means(
+    global_regions_path: str,
+    netcdf_path: str,
+    variable_name: str,
+    output_json_path: str,
+    lat_name: str = "lat",
+    lon_name: str = "lon",
+    use_all_touched: bool = True,
+    model_weights: dict[str, float] = {},
+    max_workers: int = 12,
+    country: str | None = None,
+) -> bool:
+    """
+    Calculates the spatial mean of a NetCDF variable for each region
+    in the global_regions.geojson file, preserving other dimensions (like time, model).
 
     This implementation allows grid cells to contribute to multiple
     overlapping regions, ensuring small regions receive data.
 
     Args:
-        geojson_path: Path to the input GeoJSON file containing vector features.
+        global_regions_path: Path to the global_regions.geojson file containing vector features.
         netcdf_path: Path to the input NetCDF file with gridded data.
         variable_name: The name of the variable to average within the NetCDF file.
-        output_geojson_path: Path where the output GeoJSON file will be saved.
+        output_json_path: Path where the output JSON file will be saved.
         lat_name: Name of the latitude coordinate variable in the NetCDF file.
         lon_name: Name of the longitude coordinate variable in the NetCDF file.
         use_all_touched: Whether grid cells touching a feature are included in its mask.
         model_weights: Optionally provide weights to pre-compute average value across models.
         max_workers: Maximum number of parallel processes to use.
+        country: Optional country code to filter regions (e.g., 'USA', 'AFG'). If None, all regions are processed.
 
     Returns:
         True if the process completed successfully, False otherwise.
     """
     print(
-        f"Processing {variable_name} from {netcdf_path} with features from {geojson_path}"
+        f"Processing {variable_name} from {netcdf_path} with regions from {global_regions_path}"
     )
 
     gdf = None
     ds = None
 
     try:
-        # 1. Read and prepare GeoJSON features
-        gdf = gpd.read_file(geojson_path)
-        print(f"Processing {len(gdf)} features from GeoJSON")
+        # 1. Read and prepare global regions
+        gdf = gpd.read_file(global_regions_path)
+
+        # Filter by country if specified
+        if country is not None:
+            gdf = gdf[gdf["source_country_code"] == country].copy()
+            if len(gdf) == 0:
+                print(f"No regions found for country code: {country}")
+                return False
+            print(f"Processing {len(gdf)} regions for country {country}")
+        else:
+            print(f"Processing {len(gdf)} regions from global regions file")
 
         # Ensure geographic CRS (EPSG:4326)
         if gdf.crs is None:
@@ -293,19 +344,38 @@ def calculate_geojson_feature_means(
             warnings.warn("No regions contained any grid cells")
             return False
 
-        # 6. Convert to DataFrame and join with GeoJSON
+        # 6. Convert to DataFrame and create output with region metadata
         print(f"Combining results for {len(final_data)} regions with data")
         result_df = pd.DataFrame.from_dict(final_data, orient="index")
         result_df.index.name = "region_id"
 
-        # Join with original GeoDataFrame
-        output_gdf = gdf.copy()
-        output_gdf = output_gdf.join(result_df, how="left")
+        # Create output data structure with region metadata but no geometry
+        output_data = []
+        for region_id, row in gdf.iterrows():
+            region_info = {
+                "region_id": row["region_id"],
+                "region_identifier": row["region_identifier"],
+                "source_country_code": row["source_country_code"],
+                "source_country_name": row["source_country_name"],
+                "source_admin_level": row["source_admin_level"],
+                "GID_0": row["GID_0"],
+                "COUNTRY": row["COUNTRY"],
+                "NAME_1": row["NAME_1"],
+            }
 
-        # 7. Write output GeoJSON
-        os.makedirs(os.path.dirname(output_geojson_path), exist_ok=True)
-        output_gdf.to_file(output_geojson_path, driver="GeoJSON")
-        print(f"Results saved to {output_geojson_path}")
+            # Add climate data if available for this region
+            if region_id in final_data:
+                region_info.update(final_data[region_id])
+
+            output_data.append(region_info)
+
+        # 7. Write output JSON
+        import json
+
+        os.makedirs(os.path.dirname(output_json_path), exist_ok=True)
+        with open(output_json_path, "w") as f:
+            json.dump(output_data, f, indent=2, default=str)
+        print(f"Results saved to {output_json_path}")
 
         return True
 
@@ -323,14 +393,14 @@ def calculate_geojson_feature_means(
 
 
 if __name__ == "__main__":
-    country = "PRT"
-    level = 1
+    country_code = "PRT"  # Optional: set to None to process all regions
     var_name = "ndays_gt_35c"
-    input_geojson = f"country-bounds/gadm41_{country}_{level}.json"
+    input_global_regions = "global_regions.geojson"
     input_netcdf = f"climate-metrics/{var_name}_multi_model_ssp585_2021-2025.nc"
-    output_geojson = (
-        f"climate-metrics/{var_name}_{country}_{level}_ssp585_2021-2025.geojson"
-    )
+    if country_code:
+        output_json = f"climate-metrics/{var_name}_{country_code}_ssp585_2021-2025.json"
+    else:
+        output_json = f"climate-metrics/{var_name}_global_ssp585_2021-2025.json"
 
     # Derived from Massoud et al, 2023 (https://doi.org/10.1038/s43247-023-01009-8)
     # This is not necessarily valid for this downscaled dataset, but is okay for a
@@ -355,22 +425,23 @@ if __name__ == "__main__":
     }
 
     # Create dummy output dir
-    os.makedirs(os.path.dirname(output_geojson), exist_ok=True)
+    os.makedirs(os.path.dirname(output_json), exist_ok=True)
 
     print("Running example calculation...")
     # Check if files exist before running
-    if not os.path.exists(input_geojson):
-        print(f"ERROR: Example input GeoJSON not found at '{input_geojson}'")
+    if not os.path.exists(input_global_regions):
+        print(f"ERROR: Global regions file not found at '{input_global_regions}'")
     elif not os.path.exists(input_netcdf):
         print(f"ERROR: Example input NetCDF not found at '{input_netcdf}'")
     else:
-        success = calculate_geojson_feature_means(
-            geojson_path=input_geojson,
+        success = calculate_global_regions_means(
+            global_regions_path=input_global_regions,
             netcdf_path=input_netcdf,
             variable_name=var_name,
-            output_geojson_path=output_geojson,
+            output_json_path=output_json,
             use_all_touched=True,
             model_weights=weights,
+            country=country_code,
         )
 
         if success:

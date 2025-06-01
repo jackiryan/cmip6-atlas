@@ -17,7 +17,6 @@ import importlib.resources
 import json
 import os
 import sys
-from typing import List, Optional
 import geopandas as gpd  # type: ignore [import-untyped]
 import pandas as pd
 
@@ -40,7 +39,7 @@ def get_default_csv_path() -> str | None:
         return None
 
 
-def read_countries_config(csv_path: str) -> Optional[pd.DataFrame]:
+def read_countries_config(csv_path: str) -> pd.DataFrame | None:
     """Read the countries configuration CSV file."""
     try:
         df = pd.read_csv(csv_path)
@@ -58,7 +57,7 @@ def read_countries_config(csv_path: str) -> Optional[pd.DataFrame]:
 
 def load_gadm_files(
     countries_df: pd.DataFrame, gadm_dir: str
-) -> List[gpd.GeoDataFrame]:
+) -> list[gpd.GeoDataFrame]:
     """Load all GADM GeoJSON files into a list of GeoDataFrames."""
     gdfs = []
     missing_files = []
@@ -102,7 +101,7 @@ def load_gadm_files(
     return gdfs
 
 
-def combine_and_assign_ids(gdfs: List[gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
+def combine_and_assign_ids(gdfs: list[gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
     """Combine all GeoDataFrames and assign unique region IDs."""
     if not gdfs:
         raise ValueError("No GeoDataFrames to combine")
@@ -113,6 +112,35 @@ def combine_and_assign_ids(gdfs: List[gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
     combined_gdf = pd.concat(gdfs, ignore_index=True)
 
     print(f"Combined dataset contains {len(combined_gdf)} total features")
+
+    # Filter out waterbody regions
+    initial_count = len(combined_gdf)
+    waterbody_mask = (
+        (combined_gdf.get("TYPE_1", "").str.contains("Waterbody", case=False, na=False))
+        | (
+            combined_gdf.get("ENGTYPE_1", "").str.contains(
+                "Waterbody", case=False, na=False
+            )
+        )
+        | (
+            combined_gdf.get("TYPE_2", "").str.contains(
+                "Waterbody", case=False, na=False
+            )
+        )
+        | (
+            combined_gdf.get("ENGTYPE_2", "").str.contains(
+                "Waterbody", case=False, na=False
+            )
+        )
+    )
+
+    combined_gdf = combined_gdf[~waterbody_mask].copy()
+    filtered_count = initial_count - len(combined_gdf)
+
+    if filtered_count > 0:
+        print(f"Filtered out {filtered_count} waterbody regions")
+
+    print(f"Final dataset contains {len(combined_gdf)} features after filtering")
 
     # Assign unique region IDs (1-based indexing)
     combined_gdf["region_id"] = range(1, len(combined_gdf) + 1)
@@ -181,7 +209,7 @@ def save_global_regions(gdf: gpd.GeoDataFrame, output_path: str) -> None:
 
 
 def create_global_regions(
-    csv_path: Optional[str] = None,
+    csv_path: str | None = None,
     gadm_dir: str = "country-bounds",
     output_path: str = "global_regions.geojson",
     download_missing: bool = True,
