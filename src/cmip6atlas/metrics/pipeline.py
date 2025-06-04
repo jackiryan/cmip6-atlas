@@ -192,17 +192,25 @@ def calculate_multi_model_metric(
     for model in models_to_process:
         print(f"Processing model: {model}")
 
-        # Calculate metric for this model
-        output_path = calculate_climate_metric(
-            metric_name=metric_name,
-            start_year=start_year,
-            end_year=end_year,
-            scenario=scenario,
-            model=model,
-            base_dir=base_dir,
-            output_dir=output_dir,
-            output_format="netcdf",  # Always use netcdf for combining
+        expected_netcdf_path = os.path.join(
+            output_dir, f"{metric_name}_{model}_{scenario}_{start_year}-{end_year}.nc"
         )
+        if os.path.exists(expected_netcdf_path):
+            print(f"\n✓ {model} dataset already exists: {expected_netcdf_path}")
+            print("Skipping metric calculation...")
+            output_path = expected_netcdf_path
+        else: 
+            # Calculate metric for this model
+            output_path = calculate_climate_metric(
+                metric_name=metric_name,
+                start_year=start_year,
+                end_year=end_year,
+                scenario=scenario,
+                model=model,
+                base_dir=base_dir,
+                output_dir=output_dir,
+                output_format="netcdf",  # Always use netcdf for combining
+            )
 
         # Check if calculation was successful
         if output_path and os.path.exists(output_path):
