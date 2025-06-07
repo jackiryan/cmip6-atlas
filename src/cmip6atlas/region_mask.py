@@ -105,7 +105,7 @@ def calculate_geojson_feature_means(
     lon_name: str = "lon",
     use_all_touched: bool = True,
     model_weights: dict[str, float] = {},
-    max_workers: int = 12,
+    max_workers: int = 4,
 ) -> bool:
     """
     Legacy wrapper function for backward compatibility.
@@ -145,7 +145,7 @@ def calculate_global_regions_means(
     lon_name: str = "lon",
     use_all_touched: bool = True,
     model_weights: dict[str, float] = {},
-    max_workers: int = 12,
+    max_workers: int = 4,
     country: str | None = None,
 ) -> bool:
     """

@@ -156,7 +156,10 @@ def process_metrics_time_series(
             print(f"Filtering for country: {country_code}")
 
         # For multi-model outputs, the variable name is typically the metric name
-        variable_name = "mean_" + metric
+        if "precip" in metric:
+            variable_name = "total_" + metric
+        else:
+            variable_name = "mean_" + metric
 
         # Create output JSON path
         if country_code:
