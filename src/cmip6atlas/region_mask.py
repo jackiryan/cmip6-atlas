@@ -31,6 +31,7 @@ import warnings
 import xarray as xr
 import concurrent.futures
 from typing import Any
+from tqdm import tqdm
 
 
 def apply_model_weights(
@@ -334,11 +335,14 @@ def calculate_global_regions_means(
                 for idx, row in gdf_raster.iterrows()
             }
 
-            # Collect results as they complete
-            for future in concurrent.futures.as_completed(futures):
-                region_id, region_data = future.result()
-                if region_data:  # Only store if we have data
-                    final_data[region_id] = region_data
+            # Collect results as they complete with progress bar
+            with tqdm(total=len(futures), desc="Processing regions", unit="region") as pbar:
+                for future in concurrent.futures.as_completed(futures):
+                    region_id, region_data = future.result()
+                    if region_data:  # Only store if we have data
+                        final_data[region_id] = region_data
+                    pbar.update(1)
+                    pbar.set_postfix(completed=len(final_data))
 
         if not final_data:
             warnings.warn("No regions contained any grid cells")
