@@ -258,7 +258,7 @@ def calculate_mean_temp(
     temp_datasets = datasets[variable]
 
     # Use parallel processing to handle each year
-    max_workers = min(len(temp_datasets), mp.cpu_count())
+    max_workers = 6 # min(len(temp_datasets), mp.cpu_count())
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Submit all tasks
@@ -337,7 +337,7 @@ def calculate_total_precip(
     precip_datasets = datasets[variable]
 
     # Use parallel processing to handle each year
-    max_workers = min(len(precip_datasets), mp.cpu_count())
+    max_workers = 6 # min(len(precip_datasets), mp.cpu_count())
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Submit all tasks

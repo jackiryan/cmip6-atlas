@@ -146,7 +146,7 @@ def calculate_global_regions_means(
     lon_name: str = "lon",
     use_all_touched: bool = True,
     model_weights: dict[str, float] = {},
-    max_workers: int = 4,
+    max_workers: int = 6,
     country: str | None = None,
 ) -> bool:
     """
