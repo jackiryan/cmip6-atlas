@@ -27,6 +27,7 @@ import pandas as pd
 from rasterio.features import rasterize  # type: ignore [import-untyped]
 from rasterio.transform import Affine  # type: ignore [import-untyped]
 import shapely.ops
+from shapely.geometry import MultiPolygon, LineString
 import warnings
 import xarray as xr
 import concurrent.futures
@@ -231,10 +232,36 @@ def calculate_global_regions_means(
 
         # Convert geometries from -180/180° to 0/360° longitude
         def convert_to_0_360(geom):
+            """Convert geometry from -180/180 to 0/360, handling prime meridian crossing."""
+            # Check if geometry crosses prime meridian (has coords on both sides)
+            coords = list(geom.exterior.coords) if hasattr(geom, 'exterior') else []
+            if not coords:
+                return geom
+            
+            lons = [c[0] for c in coords]
+            crosses_prime_meridian = min(lons) < 0 and max(lons) > 0
+            
+            if crosses_prime_meridian and (max(lons) - min(lons)) < 180:
+                # Create a splitting line at longitude 0
+                split_line = LineString([(0, -90), (0, 90)])
+                try:
+                    split_geoms = shapely.ops.split(geom, split_line)
+                    # Convert each piece separately
+                    converted_pieces = []
+                    for piece in split_geoms.geoms:
+                        def shift_lon(x, y, z=None):
+                            new_x = (x + 360) % 360
+                            return (new_x, y) if z is None else (new_x, y, z)
+                        converted_pieces.append(shapely.ops.transform(shift_lon, piece))
+                    return MultiPolygon(converted_pieces)
+                except:
+                    pass
+            
+            # Standard conversion for geometries not crossing prime meridian
             def shift_lon(x, y, z=None):
                 new_x = (x + 360) % 360
                 return (new_x, y) if z is None else (new_x, y, z)
-
+            
             return shapely.ops.transform(shift_lon, geom)
 
         # Apply conversion
@@ -397,9 +424,9 @@ def calculate_global_regions_means(
 
 
 if __name__ == "__main__":
-    country_code = "PRT"  # Optional: set to None to process all regions
-    var_name = "ndays_gt_35c"
-    input_global_regions = "global_regions.geojson"
+    country_code = "DZA"  # Optional: set to None to process all regions
+    var_name = "annual_temp"
+    input_global_regions = "/Users/jryan/general/cmip6-atlas-backend/data/sources/global_regions.geojson"
     input_netcdf = f"climate-metrics/{var_name}_multi_model_ssp585_2021-2025.nc"
     if country_code:
         output_json = f"climate-metrics/{var_name}_{country_code}_ssp585_2021-2025.json"
@@ -441,7 +468,7 @@ if __name__ == "__main__":
         success = calculate_global_regions_means(
             global_regions_path=input_global_regions,
             netcdf_path=input_netcdf,
-            variable_name=var_name,
+            variable_name="mean_"+var_name,
             output_json_path=output_json,
             use_all_touched=True,
             model_weights=weights,
