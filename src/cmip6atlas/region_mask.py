@@ -27,6 +27,7 @@ import pandas as pd
 from rasterio.features import rasterize  # type: ignore [import-untyped]
 from rasterio.transform import Affine  # type: ignore [import-untyped]
 import shapely.ops
+from shapely.geometry import MultiPolygon, LineString
 import warnings
 import xarray as xr
 import concurrent.futures
@@ -231,19 +232,44 @@ def calculate_global_regions_means(
 
         # Convert geometries from -180/180° to 0/360° longitude
         def convert_to_0_360(geom):
+            """Convert geometry from -180/180 to 0/360, handling prime meridian crossing."""
+            minx, _, maxx, _ = geom.bounds
+            crosses_prime_meridian = minx < 0 and maxx > 0
+            
+            if crosses_prime_meridian and (maxx - minx) < 180:
+                # Create a splitting line at longitude 0
+                split_line = LineString([(0, -90), (0, 90)])
+                try:
+                    split_geoms = shapely.ops.split(geom, split_line)
+                    # Convert each piece separately
+                    converted_pieces = []
+                    for piece in split_geoms.geoms:
+                        if piece.bounds[0] < 0:
+                            epsilon = -360.0001
+                        else:
+                            epsilon = 360.0001
+                        def shift_lon(x, y, z=None):
+                            new_x = (x + epsilon) % 360
+                            return (new_x, y) if z is None else (new_x, y, z)
+                        converted_pieces.append(shapely.ops.transform(shift_lon, piece))
+                    return MultiPolygon(converted_pieces)
+                except:
+                    pass
+            
+            # Standard conversion for geometries not crossing prime meridian
             def shift_lon(x, y, z=None):
                 new_x = (x + 360) % 360
                 return (new_x, y) if z is None else (new_x, y, z)
-
+            
             return shapely.ops.transform(shift_lon, geom)
 
         # Apply conversion
         gdf_raster.geometry = gdf_raster.geometry.apply(convert_to_0_360)
 
         # Fix any invalid geometries
-        invalid_count = sum(1 for geom in gdf_raster.geometry if not geom.is_valid)
-        if invalid_count > 0:
-            gdf_raster.geometry = gdf_raster.geometry.buffer(0)
+        #invalid_count = sum(1 for geom in gdf_raster.geometry if not geom.is_valid)
+        #if invalid_count > 0:
+        #    gdf_raster.geometry = gdf_raster.geometry.buffer(0)
 
         # Calculate transform for pixel centers
         transform = Affine.translation(
@@ -260,14 +286,13 @@ def calculate_global_regions_means(
         def process_region(region_id: int, geometry) -> tuple[int, dict[str, Any]]:
             """Process a single region and return its statistics."""
             try:
-                # Create a mask for just this one region
                 region_mask_array = rasterize(
-                    shapes=[(geometry, 1)],  # One region = one shape
+                    shapes=[(geometry, 1)],
                     out_shape=out_shape,
                     transform=transform,
                     fill=np.nan,
                     all_touched=use_all_touched,
-                    dtype=np.float64,
+                    dtype=np.float32,
                 )
 
                 # Skip regions with no grid cells
@@ -287,7 +312,7 @@ def calculate_global_regions_means(
                 # Calculate means specifically for this region
                 # TO DO: consider using a weighted mean to account for pixels whose
                 # centers are outside the region. SDF maybe?
-                masked_data = data_var.where(region_mask == 1)
+                masked_data = data_var.where(region_mask >= 1)
                 region_mean = masked_data.mean(dim=[lat_name, lon_name], skipna=True)
 
                 # Convert xarray result to pandas DataFrame with proper column names
@@ -298,7 +323,6 @@ def calculate_global_regions_means(
 
                 # Handle multi-level index case (common with multiple dimensions)
                 if isinstance(df.index, pd.MultiIndex):
-                    print("multi-index")
                     for idx, row in df.iterrows():
                         # Create clean column names from multi-index
                         column_parts = [variable_name]
@@ -357,7 +381,7 @@ def calculate_global_regions_means(
         output_data = []
         for region_id, row in gdf.iterrows():
             region_info = {
-                "region_id": row["region_id"],
+                "region_id": region_id,
                 "region_identifier": row["region_identifier"],
                 "source_country_code": row["source_country_code"],
                 "source_country_name": row["source_country_name"],
@@ -397,9 +421,9 @@ def calculate_global_regions_means(
 
 
 if __name__ == "__main__":
-    country_code = "PRT"  # Optional: set to None to process all regions
-    var_name = "ndays_gt_35c"
-    input_global_regions = "global_regions.geojson"
+    country_code = "DZA"  # Optional: set to None to process all regions
+    var_name = "annual_temp"
+    input_global_regions = "/Users/jryan/general/cmip6-atlas-backend/data/sources/global_regions.geojson"
     input_netcdf = f"climate-metrics/{var_name}_multi_model_ssp585_2021-2025.nc"
     if country_code:
         output_json = f"climate-metrics/{var_name}_{country_code}_ssp585_2021-2025.json"
@@ -441,7 +465,7 @@ if __name__ == "__main__":
         success = calculate_global_regions_means(
             global_regions_path=input_global_regions,
             netcdf_path=input_netcdf,
-            variable_name=var_name,
+            variable_name="mean_"+var_name,
             output_json_path=output_json,
             use_all_touched=True,
             model_weights=weights,
