@@ -21,18 +21,14 @@ SOFTWARE.
 """
 
 import geopandas as gpd  # type: ignore [import-untyped]
+import json
 import os
 import numpy as np
 import pandas as pd
-from rasterio.features import rasterize  # type: ignore [import-untyped]
-from rasterio.transform import Affine  # type: ignore [import-untyped]
-import shapely.ops
-from shapely.geometry import MultiPolygon, LineString
+import traceback
+from tqdm import tqdm # type: ignore [import-untyped]
 import warnings
 import xarray as xr
-import concurrent.futures
-from typing import Any
-from tqdm import tqdm
 
 
 def apply_model_weights(
@@ -133,7 +129,7 @@ def calculate_geojson_feature_means(
         lon_name=lon_name,
         use_all_touched=use_all_touched,
         model_weights=model_weights,
-        max_workers=max_workers,
+        #max_workers=max_workers,
         country=None,
     )
 
@@ -147,7 +143,6 @@ def calculate_global_regions_means(
     lon_name: str = "lon",
     use_all_touched: bool = True,
     model_weights: dict[str, float] = {},
-    max_workers: int = 6,
     country: str | None = None,
 ) -> bool:
     """
@@ -200,179 +195,122 @@ def calculate_global_regions_means(
             gdf = gdf.to_crs("EPSG:4326")
 
         # 2. Read NetCDF data
-        ds = xr.open_dataset(netcdf_path, chunks={}, decode_coords="all")
+        ds = xr.open_dataset(netcdf_path, chunks="auto", decode_coords="all")
+
+        # Standardize Dimensions
+        if lat_name != 'y': ds = ds.rename({lat_name: 'y'})
+        if lon_name != 'x': ds = ds.rename({lon_name: 'x'})
+
+        # 3. Coordinate Alignment
+        ds_min_x = ds.x.min().item()
+        ds_max_x = ds.x.max().item()
+
+        if ds_min_x >= 0 and ds_max_x > 180:
+            vect_min_x = gdf.bounds.minx.min()
+            if vect_min_x < 0:
+                print("Aligning coordinates: Rolling Raster from 0/360 to -180/180")
+                ds.coords['x'] = (ds.coords['x'] + 180) % 360 - 180
+                ds = ds.sortby('x')
+
+        ds.rio.write_crs("EPSG:4326", inplace=True)
 
         # Validate inputs
         if variable_name not in ds.data_vars:
             raise ValueError(f"Variable '{variable_name}' not found in NetCDF file")
-        if lat_name not in ds.coords or lon_name not in ds.coords:
-            raise ValueError(f"Required coordinates not found: {lat_name}/{lon_name}")
+        #if lat_name not in ds.coords or lon_name not in ds.coords:
+        #    raise ValueError(f"Required coordinates not found: {lat_name}/{lon_name}")
 
         data_var = ds[variable_name]
         print(f"Processing '{variable_name}' with dimensions: {data_var.dims}")
 
-        # Apply model weights if provided
+        # 4. Apply model weights if provided
         if "model" in data_var.dims and model_weights:
             print(f"Applying weights to {len(model_weights)} models")
             data_var = apply_model_weights(data_var, model_weights)
-            print(data_var)
             print(f"After applying weights, dimensions: {data_var.dims}")
+            # Ensure CRS persists after calculation
+            data_var.rio.write_crs("EPSG:4326", inplace=True)
 
-        # 3. Setup for multi-region grid cell contribution
-        # Get coordinate info
-        lat_vals = ds[lat_name].values
-        lon_vals = ds[lon_name].values
-        lat_res = abs(lat_vals[1] - lat_vals[0]) if len(lat_vals) > 1 else 0
-        lon_res = abs(lon_vals[1] - lon_vals[0]) if len(lon_vals) > 1 else 0
-        is_lat_ascending = lat_vals[1] > lat_vals[0] if len(lat_vals) > 1 else True
-        out_shape = (len(lat_vals), len(lon_vals))
-
-        # Create a copy for coordinates conversion (0-360°)
-        gdf_raster = gdf.copy()
-
-        # Convert geometries from -180/180° to 0/360° longitude
-        def convert_to_0_360(geom):
-            """Convert geometry from -180/180 to 0/360, handling prime meridian crossing."""
-            minx, _, maxx, _ = geom.bounds
-            crosses_prime_meridian = minx < 0 and maxx > 0
-            
-            if crosses_prime_meridian and (maxx - minx) < 180:
-                # Create a splitting line at longitude 0
-                split_line = LineString([(0, -90), (0, 90)])
-                try:
-                    split_geoms = shapely.ops.split(geom, split_line)
-                    # Convert each piece separately
-                    converted_pieces = []
-                    for piece in split_geoms.geoms:
-                        if piece.bounds[0] < 0:
-                            epsilon = -360.0001
-                        else:
-                            epsilon = 360.0001
-                        def shift_lon(x, y, z=None):
-                            new_x = (x + epsilon) % 360
-                            return (new_x, y) if z is None else (new_x, y, z)
-                        converted_pieces.append(shapely.ops.transform(shift_lon, piece))
-                    return MultiPolygon(converted_pieces)
-                except:
-                    pass
-            
-            # Standard conversion for geometries not crossing prime meridian
-            def shift_lon(x, y, z=None):
-                new_x = (x + 360) % 360
-                return (new_x, y) if z is None else (new_x, y, z)
-            
-            return shapely.ops.transform(shift_lon, geom)
-
-        # Apply conversion
-        gdf_raster.geometry = gdf_raster.geometry.apply(convert_to_0_360)
-
-        # Fix any invalid geometries
-        #invalid_count = sum(1 for geom in gdf_raster.geometry if not geom.is_valid)
-        #if invalid_count > 0:
-        #    gdf_raster.geometry = gdf_raster.geometry.buffer(0)
-
-        # Calculate transform for pixel centers
-        transform = Affine.translation(
-            lon_vals[0] - lon_res / 2, lat_vals[0] - lat_res / 2
-        ) * Affine.scale(lon_res, lat_res)
-
-        if not is_lat_ascending:
-            # Flip y-scaling for descending latitudes
-            transform = Affine.translation(
-                lon_vals[0] - lon_res / 2, lat_vals[0] + lat_res / 2
-            ) * Affine.scale(lon_res, -lat_res)
-
-        # 4. Define function to process a single region (for parallelization)
-        def process_region(region_id: int, geometry) -> tuple[int, dict[str, Any]]:
-            """Process a single region and return its statistics."""
-            try:
-                region_mask_array = rasterize(
-                    shapes=[(geometry, 1)],
-                    out_shape=out_shape,
-                    transform=transform,
-                    fill=np.nan,
-                    all_touched=use_all_touched,
-                    dtype=np.float32,
-                )
-
-                # Skip regions with no grid cells
-                if np.isnan(region_mask_array).all():
-                    print(
-                        f"Region {region_id} has no corresponding grid cells - skipping"
-                    )
-                    return region_id, {}
-
-                # Create xarray mask with correct coordinates
-                region_mask = xr.DataArray(
-                    region_mask_array,
-                    coords={lat_name: ds[lat_name], lon_name: ds[lon_name]},
-                    dims=[lat_name, lon_name],
-                )
-
-                # Calculate means specifically for this region
-                # TO DO: consider using a weighted mean to account for pixels whose
-                # centers are outside the region. SDF maybe?
-                masked_data = data_var.where(region_mask >= 1)
-                region_mean = masked_data.mean(dim=[lat_name, lon_name], skipna=True)
-
-                # Convert xarray result to pandas DataFrame with proper column names
-                df = region_mean.to_dataframe(name=variable_name)
-
-                # Process the DataFrame into a dictionary
-                region_data = {}
-
-                # Handle multi-level index case (common with multiple dimensions)
-                if isinstance(df.index, pd.MultiIndex):
-                    for idx, row in df.iterrows():
-                        # Create clean column names from multi-index
-                        column_parts = [variable_name]
-                        for dim_name, dim_val in zip(
-                            df.index.names, idx if isinstance(idx, tuple) else (idx,)
-                        ):
-                            column_parts.append(f"{dim_name}_{dim_val}")
-                        column_name = "_".join(column_parts)
-
-                        # Use iloc to access by position (fix for the warning)
-                        region_data[column_name] = row.iloc[0]
-                else:
-                    for idx, row in df.iterrows():
-                        # Usually just '{variable_name}_{year}'
-                        column_name = f"{df.columns[0]}_{idx}"
-                        region_data[column_name] = row.iloc[0]
-
-                return region_id, region_data
-
-            except Exception as e:
-                print(f"Error processing region {region_id}: {e}")
-                return region_id, {}
-
-        # 5. Process regions in parallel
-        print(
-            f"Processing {len(gdf_raster)} regions with up to {max_workers} parallel workers"
-        )
+        # 5. Region Loop
         final_data = {}
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all regions for processing
-            futures = {
-                executor.submit(process_region, idx, row.geometry): idx
-                for idx, row in gdf_raster.iterrows()
-            }
+        for idx, row in tqdm(gdf.iterrows(), total=len(gdf), desc="Clipping Regions"):
+            try:
+                region_id = idx # or row.name
+                geom = row.geometry
+                
+                # First clip the array to the bounding box of the geometry
+                minx, miny, maxx, maxy = geom.bounds
+                
+                # Buffer slightly to ensure we catch 'all_touched' pixels on the edge
+                # Assuming roughly 0.25 degree res, buffer by 0.25
+                subset = data_var.rio.clip_box(
+                    minx=minx - 0.25,
+                    miny=miny - 0.25,
+                    maxx=maxx + 0.25,
+                    maxy=maxy + 0.25,
+                )
+                
+                # Check if subset is empty (region outside data coverage)
+                if subset.size == 0:
+                    continue
 
-            # Collect results as they complete with progress bar
-            with tqdm(total=len(futures), desc="Processing regions", unit="region") as pbar:
-                for future in concurrent.futures.as_completed(futures):
-                    region_id, region_data = future.result()
-                    if region_data:  # Only store if we have data
-                        final_data[region_id] = region_data
-                    pbar.update(1)
-                    pbar.set_postfix(completed=len(final_data))
+                # Perform geometry mask on subset of data
+                # from_disk=True ensures we don't load the whole array into memory
+                masked = subset.rio.clip(
+                    [geom],
+                    ds.rio.crs,
+                    all_touched=use_all_touched,
+                    drop=False,
+                    from_disk=True
+                )
 
-        if not final_data:
-            warnings.warn("No regions contained any grid cells")
-            return False
+                masked = masked.where(masked != 0)
 
-        # 6. Convert to DataFrame and create output with region metadata
+                """
+                valid_pixels = masked.values.flatten()
+                valid_pixels = valid_pixels[~np.isnan(valid_pixels)] # Remove NaNs
+
+                if region_id == 1250:
+                    print(f"--- DEBUG: {region_id} ---")
+                    print(f"Pixel values: {valid_pixels}")
+                    print(f"Min: {valid_pixels.min()}, Max: {valid_pixels.max()}")
+                    print(f"Count of Zeros: {np.sum(valid_pixels == 0)}")
+                """
+
+                # Calculate Mean
+                region_mean = masked.mean(dim=['x', 'y'], skipna=True)
+                region_mean = region_mean.compute()
+                
+                # Processing Output
+                if region_mean.size == 1:
+                    # Single scalar case (e.g., time-averaged or single time slice)
+                    val = region_mean.item()
+                    final_data[region_id] = {variable_name: val}
+                else:
+                    # Multi-dimensional case (e.g., time series)
+                    df_reg = region_mean.to_dataframe(name=variable_name)
+                    
+                    # Handle the index to create flat column names like 'annual_temp_2021'
+                    reg_dict = {}
+                    for idx_val, row in df_reg.iterrows():
+                        # If index is a tuple (multi-index), join parts; otherwise just use the value
+                        if isinstance(idx_val, tuple):
+                            suffix = "_".join(map(str, idx_val))
+                        else:
+                            suffix = str(idx_val)
+                            
+                        col_name = f"{variable_name}_{suffix}"
+                        reg_dict[col_name] = row[variable_name]
+                        
+                    final_data[region_id] = reg_dict
+
+            except Exception as e:
+                # Often happens if region is too small or outside bounds
+                print(f"Skip {idx}: {e}")
+                pass
+
+        # 6. Combine results and create output with region metadata
         print(f"Combining results for {len(final_data)} regions with data")
         result_df = pd.DataFrame.from_dict(final_data, orient="index")
         result_df.index.name = "region_id"
@@ -398,8 +336,6 @@ def calculate_global_regions_means(
             output_data.append(region_info)
 
         # 7. Write output JSON
-        import json
-
         os.makedirs(os.path.dirname(output_json_path), exist_ok=True)
         with open(output_json_path, "w") as f:
             json.dump(output_data, f, indent=2, default=str)
@@ -409,19 +345,15 @@ def calculate_global_regions_means(
 
     except Exception as e:
         print(f"Error: {e}")
-        import traceback
-
         traceback.print_exc()
         return False
-
     finally:
-        # Clean up
-        if ds is not None:
+        if 'ds' in locals() and ds is not None:
             ds.close()
 
 
 if __name__ == "__main__":
-    country_code = "DZA"  # Optional: set to None to process all regions
+    country_code = None # "BHS"  # Optional: set to None to process all regions
     var_name = "annual_temp"
     input_global_regions = "/Users/jryan/general/cmip6-atlas-backend/data/sources/global_regions.geojson"
     input_netcdf = f"climate-metrics/{var_name}_multi_model_ssp585_2021-2025.nc"
