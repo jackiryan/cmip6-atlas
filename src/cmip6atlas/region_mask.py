@@ -20,6 +20,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
+import concurrent.futures
 import geopandas as gpd  # type: ignore [import-untyped]
 import json
 import os
@@ -143,6 +144,7 @@ def calculate_global_regions_means(
     lon_name: str = "lon",
     use_all_touched: bool = True,
     model_weights: dict[str, float] = {},
+    max_workers: int = 8,
     country: str | None = None,
 ) -> bool:
     """
@@ -217,8 +219,6 @@ def calculate_global_regions_means(
         # Validate inputs
         if variable_name not in ds.data_vars:
             raise ValueError(f"Variable '{variable_name}' not found in NetCDF file")
-        #if lat_name not in ds.coords or lon_name not in ds.coords:
-        #    raise ValueError(f"Required coordinates not found: {lat_name}/{lon_name}")
 
         data_var = ds[variable_name]
         print(f"Processing '{variable_name}' with dimensions: {data_var.dims}")
@@ -232,18 +232,14 @@ def calculate_global_regions_means(
             data_var.rio.write_crs("EPSG:4326", inplace=True)
 
         # 5. Region Loop
-        final_data = {}
-
-        for idx, row in tqdm(gdf.iterrows(), total=len(gdf), desc="Clipping Regions"):
+        data_var = data_var.load()
+        def process_single_region(args):
+            idx, geom, region_id = args
             try:
-                region_id = idx # or row.name
-                geom = row.geometry
-                
-                # First clip the array to the bounding box of the geometry
+                # A. Optimization: Bounding Box Clip
                 minx, miny, maxx, maxy = geom.bounds
                 
-                # Buffer slightly to ensure we catch 'all_touched' pixels on the edge
-                # Assuming roughly 0.25 degree res, buffer by 0.25
+                # Buffer by 0.25 degrees to ensure we catch edge pixels
                 subset = data_var.rio.clip_box(
                     minx=minx - 0.25,
                     miny=miny - 0.25,
@@ -251,69 +247,82 @@ def calculate_global_regions_means(
                     maxy=maxy + 0.25,
                 )
                 
-                # Check if subset is empty (region outside data coverage)
                 if subset.size == 0:
-                    continue
+                    return region_id, None
 
-                # Perform geometry mask on subset of data
-                # from_disk=True ensures we don't load the whole array into memory
+                # B. Precise Geometry Mask
                 masked = subset.rio.clip(
-                    [geom],
-                    ds.rio.crs,
-                    all_touched=use_all_touched,
-                    drop=False,
-                    from_disk=True
+                    [geom], 
+                    ds.rio.crs, 
+                    all_touched=use_all_touched, 
+                    drop=False
                 )
-
+                
+                # C. Filter Zeros
                 masked = masked.where(masked != 0)
 
-                """
-                valid_pixels = masked.values.flatten()
-                valid_pixels = valid_pixels[~np.isnan(valid_pixels)] # Remove NaNs
-
-                if region_id == 1250:
-                    print(f"--- DEBUG: {region_id} ---")
-                    print(f"Pixel values: {valid_pixels}")
-                    print(f"Min: {valid_pixels.min()}, Max: {valid_pixels.max()}")
-                    print(f"Count of Zeros: {np.sum(valid_pixels == 0)}")
-                """
-
-                # Calculate Mean
+                # D. Calculate Mean
                 region_mean = masked.mean(dim=['x', 'y'], skipna=True)
-                region_mean = region_mean.compute()
                 
-                # Processing Output
+                # E. Extract Value
+                # Note: No .compute() needed here because data_var.load() made it numpy
                 if region_mean.size == 1:
-                    # Single scalar case (e.g., time-averaged or single time slice)
                     val = region_mean.item()
-                    final_data[region_id] = {variable_name: val}
+                    # Check for pure-NaN result (e.g. region was all ocean zeros)
+                    if np.isnan(val):
+                        return region_id, None
+                    return region_id, {variable_name: val}
                 else:
-                    # Multi-dimensional case (e.g., time series)
+                    # Handle time-series/multi-dim
                     df_reg = region_mean.to_dataframe(name=variable_name)
-                    
-                    # Handle the index to create flat column names like 'annual_temp_2021'
                     reg_dict = {}
                     for idx_val, row in df_reg.iterrows():
-                        # If index is a tuple (multi-index), join parts; otherwise just use the value
                         if isinstance(idx_val, tuple):
                             suffix = "_".join(map(str, idx_val))
                         else:
                             suffix = str(idx_val)
-                            
-                        col_name = f"{variable_name}_{suffix}"
-                        reg_dict[col_name] = row[variable_name]
-                        
-                    final_data[region_id] = reg_dict
+                        # Check for NaNs in time series
+                        if not pd.isna(row[variable_name]):
+                            reg_dict[f"{variable_name}_{suffix}"] = row[variable_name]
+                    
+                    if not reg_dict: return region_id, None
+                    return region_id, reg_dict
 
             except Exception as e:
-                # Often happens if region is too small or outside bounds
-                print(f"Skip {idx}: {e}")
-                pass
+                return region_id, None
+            
+        # 5. Parallel Execution
+        final_data = {}
+        print(f"Processing {len(gdf)} regions with {max_workers} workers...")
+
+        # Create argument list
+        work_args = [(idx, row.geometry, idx) for idx, row in gdf.iterrows()]
+        
+        # Use ThreadPoolExecutor (Works great for in-memory Numpy operations)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(tqdm(
+                executor.map(process_single_region, work_args), 
+                total=len(work_args),
+                unit="region"
+            ))
+
+        # Collect results
+        for region_id, data in results:
+            if data:
+                final_data[region_id] = data
 
         # 6. Combine results and create output with region metadata
         print(f"Combining results for {len(final_data)} regions with data")
-        result_df = pd.DataFrame.from_dict(final_data, orient="index")
-        result_df.index.name = "region_id"
+        #result_df = pd.DataFrame.from_dict(final_data, orient="index")
+        #result_df.index.name = "region_id"
+
+        all_ids = set(gdf.index) # or gdf['region_id']
+        processed_ids = set(final_data.keys())
+        missing_ids = all_ids - processed_ids
+
+        print(f"Missing {len(missing_ids)} regions.")
+        missing_rows = gdf.loc[list(missing_ids)]
+        print(missing_rows[['region_identifier', 'source_country_name', 'source_admin_level']])
 
         # Create output data structure with region metadata but no geometry
         output_data = []
