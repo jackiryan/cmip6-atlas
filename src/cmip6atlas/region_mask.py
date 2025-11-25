@@ -78,19 +78,20 @@ def apply_model_weights(
         dims=["model"],
     )
 
-    # Normalize weights to sum to 1 (only for models with weights)
-    weights_sum = weights_arr.sum()
-    if weights_sum > 0:
-        weights_arr = weights_arr / weights_sum
-    else:
+    # Handle case where all weights are zero (potential user input)
+    if weights_arr.sum() == 0:
         warnings.warn("All model weights are zero. Using unweighted average.")
         return data_var.mean(dim="model")
 
-    # Filter out models with zero weight
+    # Normalize weights to sum to 1 (only for models with weights)
     masked_data = data_var.where(weights_arr > 0)
 
-    # Perform weighted average along model dimension
-    weighted_avg = (masked_data * weights_arr).sum(dim="model", skipna=True)
+    # Calculate weighted sum without converting NaNs to 0
+    numerator = (masked_data * weights_arr).sum(dim="model", skipna=True)
+    denominator = weights_arr.where(masked_data.notnull()).sum(dim="model")
+
+    # Perform weighted average along model dimension, preserve NaN
+    weighted_avg = numerator / denominator
 
     return weighted_avg
 
@@ -234,7 +235,7 @@ def calculate_global_regions_means(
         # 5. Region Loop
         data_var = data_var.load()
         def process_single_region(args):
-            idx, geom, region_id = args
+            region_id, geom = args
             try:
                 # A. Optimization: Bounding Box Clip
                 minx, miny, maxx, maxy = geom.bounds
@@ -252,23 +253,19 @@ def calculate_global_regions_means(
 
                 # B. Precise Geometry Mask
                 masked = subset.rio.clip(
-                    [geom], 
-                    ds.rio.crs, 
-                    all_touched=use_all_touched, 
+                    [geom],
+                    ds.rio.crs,
+                    all_touched=use_all_touched,
                     drop=False
                 )
-                
-                # C. Filter Zeros
-                masked = masked.where(masked != 0)
 
-                # D. Calculate Mean
+                # C. Calculate Mean
                 region_mean = masked.mean(dim=['x', 'y'], skipna=True)
                 
-                # E. Extract Value
-                # Note: No .compute() needed here because data_var.load() made it numpy
+                # D. Extract Value
                 if region_mean.size == 1:
                     val = region_mean.item()
-                    # Check for pure-NaN result (e.g. region was all ocean zeros)
+                    # Check for pure-NaN result (e.g. region was all ocean)
                     if np.isnan(val):
                         return region_id, None
                     return region_id, {variable_name: val}
@@ -296,7 +293,7 @@ def calculate_global_regions_means(
         print(f"Processing {len(gdf)} regions with {max_workers} workers...")
 
         # Create argument list
-        work_args = [(idx, row.geometry, idx) for idx, row in gdf.iterrows()]
+        work_args = [(idx, row.geometry) for idx, row in gdf.iterrows()]
         
         # Use ThreadPoolExecutor (Works great for in-memory Numpy operations)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
