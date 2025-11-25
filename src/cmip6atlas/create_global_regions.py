@@ -142,8 +142,8 @@ def combine_and_assign_ids(gdfs: list[gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
 
     print(f"Final dataset contains {len(combined_gdf)} features after filtering")
 
-    # Assign unique region IDs (1-based indexing)
-    combined_gdf["region_id"] = range(1, len(combined_gdf) + 1)
+    # Assign unique region IDs (0-based indexing)
+    combined_gdf["region_id"] = range(0, len(combined_gdf))
 
     # Create a human-readable region identifier
     combined_gdf["region_identifier"] = (
@@ -170,7 +170,7 @@ def combine_and_assign_ids(gdfs: list[gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
 
     combined_gdf = combined_gdf[column_order]
 
-    print(f"Assigned unique IDs from 1 to {len(combined_gdf)}")
+    print(f"Assigned unique IDs from 0 to {len(combined_gdf) - 1}")
     return combined_gdf
 
 
