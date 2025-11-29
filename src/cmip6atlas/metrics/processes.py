@@ -2,7 +2,6 @@ import xarray as xr
 import numpy as np
 from typing import cast
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from functools import partial
 import multiprocessing as mp
 
 from cmip6atlas.metrics.definitions import SeasonDefinition
@@ -254,7 +253,7 @@ def calculate_mean_temp(
         Dataset with seasonal temperature normals
     """
     variable = "tas"  # Temperature variable
-    metric_name = f"mean_{season.name}_temp"
+    metric_name = f"{season.name}_temp"
     temp_datasets = datasets[variable]
 
     # Use parallel processing to handle each year
@@ -329,7 +328,7 @@ def calculate_total_precip(
         Dataset with seasonal precipitation totals
     """
     variable = "pr"  # Precipitation variable
-    metric_name = f"total_{season.name}_precip"
+    metric_name = f"{season.name}_precip"
     # Sometimes the model has a bad pixel that should be excluded
     # Tropical cyclones are not well modeled in CMIP anyways, so
     # clip any flux over 0.007 kg/m2/s to 0.007

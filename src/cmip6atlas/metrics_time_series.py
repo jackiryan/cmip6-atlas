@@ -24,8 +24,7 @@ import argparse
 import os
 from typing import cast
 
-import pandas as pd
-
+from cmip6atlas.era5_normals import process_era5_normal
 from cmip6atlas.metrics.config import CLIMATE_METRICS
 from cmip6atlas.metrics.pipeline import calculate_multi_model_metric
 from cmip6atlas.region_mask import calculate_global_regions_means
@@ -120,24 +119,39 @@ def process_metrics_time_series(
             output_dir, f"{metric}_multi_model_{scenario}_{start_year}-{end_year}.nc"
         )
 
+        if scenario == "era5":
+            expected_netcdf_path = os.path.join(
+                output_dir, f"{metric}_{scenario}_{start_year}-{end_year}.nc"
+            )
+
         if os.path.exists(expected_netcdf_path):
             print(f"\n✓ Multi-model dataset already exists: {expected_netcdf_path}")
             print("Skipping metric calculation...")
             netcdf_output_path = expected_netcdf_path
         else:
-            print("Calculating multi-model metric...")
-            netcdf_output_path = calculate_multi_model_metric(
-                metric_name=metric,
-                start_year=start_year,
-                end_year=end_year,
-                scenario=scenario,
-                models=models,
-                base_dir=input_dir,
-                output_dir=output_dir,
-            )
+            if scenario != "era5":
+                print("Calculating multi-model metric...")
+                netcdf_output_path = calculate_multi_model_metric(
+                    metric_name=metric,
+                    start_year=start_year,
+                    end_year=end_year,
+                    scenario=scenario,
+                    models=models,
+                    base_dir=input_dir,
+                    output_dir=output_dir,
+                )
+            else:
+                print("Calculating ERA5 reference metric...")
+                netcdf_output_path = expected_netcdf_path
+                process_era5_normal(
+                    metric,
+                    start_year,
+                    end_year,
+                    output_dir=output_dir,
+                )
 
             if not netcdf_output_path or not os.path.exists(netcdf_output_path):
-                print(f"\n✗ No NetCDF output generated")
+                print("\n✗ No NetCDF output generated")
                 return
 
             print(f"\n✓ Successfully created multi-model dataset: {netcdf_output_path}")
@@ -155,11 +169,8 @@ def process_metrics_time_series(
         if country_code:
             print(f"Filtering for country: {country_code}")
 
-        # For multi-model outputs, the variable name is typically the metric name
-        if "precip" in metric:
-            variable_name = "total_" + metric
-        else:
-            variable_name = "mean_" + metric
+        # For multi-model outputs, the variable name is the metric name
+        variable_name = metric
 
         # Create output JSON path
         if country_code:
@@ -173,20 +184,29 @@ def process_metrics_time_series(
                 f"{metric}_global_{scenario}_{start_year}-{end_year}.json",
             )
 
-        print(f"Calculating regional means...")
-        success = calculate_global_regions_means(
-            global_regions_path=global_regions_path,
-            netcdf_path=netcdf_output_path,
-            variable_name=variable_name,
-            output_json_path=output_json_path,
-            model_weights=MODEL_WEIGHTS,
-            country=country_code,
-        )
+        print("Calculating regional means...")
+        if scenario != "era5":
+            success = calculate_global_regions_means(
+                global_regions_path=global_regions_path,
+                netcdf_path=netcdf_output_path,
+                variable_name=variable_name,
+                output_json_path=output_json_path,
+                model_weights=MODEL_WEIGHTS,
+                country=country_code,
+            )
+        else:
+            success = calculate_global_regions_means(
+                global_regions_path=global_regions_path,
+                netcdf_path=netcdf_output_path,
+                variable_name=variable_name,
+                output_json_path=output_json_path,
+                country=country_code,
+            )
 
         if success:
             print(f"✓ Created regional dataset: {output_json_path}")
         else:
-            print(f"✗ Failed to create regional dataset")
+            print("✗ Failed to create regional dataset")
 
     except Exception as e:
         print(f"\n✗ Error processing: {e}")
@@ -206,6 +226,7 @@ def cli() -> None:
     available_metrics = list(CLIMATE_METRICS.keys())
     schema = GDDP_CMIP6_SCHEMA
     scenarios = cast(list[str], schema["scenarios"])
+    scenarios.append("era5")
 
     parser.add_argument(
         "-m",

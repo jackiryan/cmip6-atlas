@@ -201,8 +201,10 @@ def calculate_global_regions_means(
         ds = xr.open_dataset(netcdf_path, chunks="auto", decode_coords="all")
 
         # Standardize Dimensions
-        if lat_name != 'y': ds = ds.rename({lat_name: 'y'})
-        if lon_name != 'x': ds = ds.rename({lon_name: 'x'})
+        if lat_name != 'y':
+            ds = ds.rename({lat_name: 'y'})
+        if lon_name != 'x':
+            ds = ds.rename({lon_name: 'x'})
 
         # 3. Coordinate Alignment
         ds_min_x = ds.x.min().item()
@@ -282,10 +284,11 @@ def calculate_global_regions_means(
                         if not pd.isna(row[variable_name]):
                             reg_dict[f"{variable_name}_{suffix}"] = row[variable_name]
                     
-                    if not reg_dict: return region_id, None
+                    if not reg_dict:
+                        return region_id, None
                     return region_id, reg_dict
 
-            except Exception as e:
+            except Exception:
                 return region_id, None
             
         # 5. Parallel Execution
@@ -341,10 +344,23 @@ def calculate_global_regions_means(
 
             output_data.append(region_info)
 
-        # 7. Write output JSON
+        # 7. Write output JSON with 3 decimal precision
+        def round_floats(obj):
+            """Recursively round all float values to 3 decimal places."""
+            if isinstance(obj, float):
+                return round(obj, 3)
+            elif isinstance(obj, dict):
+                return {k: round_floats(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [round_floats(item) for item in obj]
+            return obj
+
+        # Round all float values before writing
+        output_data_rounded = round_floats(output_data)
+
         os.makedirs(os.path.dirname(output_json_path), exist_ok=True)
         with open(output_json_path, "w") as f:
-            json.dump(output_data, f, indent=2, default=str)
+            json.dump(output_data_rounded, f, indent=2, default=str)
         print(f"Results saved to {output_json_path}")
 
         return True
@@ -403,7 +419,7 @@ if __name__ == "__main__":
         success = calculate_global_regions_means(
             global_regions_path=input_global_regions,
             netcdf_path=input_netcdf,
-            variable_name="mean_"+var_name,
+            variable_name=var_name,
             output_json_path=output_json,
             use_all_touched=True,
             model_weights=weights,

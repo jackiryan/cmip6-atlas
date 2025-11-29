@@ -211,7 +211,7 @@ def process_era5_normal(
     )
 
     output_fname = os.path.join(
-        output_dir, f"{metric}_era5_annual_{start_year}-{end_year}.nc"
+        output_dir, f"{metric}_era5_{start_year}-{end_year}.nc"
     )
     print(f"Saving processed data to {output_fname}")
     output_ds.to_netcdf(output_fname, compute=True)
